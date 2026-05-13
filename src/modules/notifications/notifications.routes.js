@@ -1,0 +1,13 @@
+import { Router } from 'express';
+import auth from '../../middlewares/auth.js';
+import role from '../../middlewares/role.js';
+import asyncHandler from '../../helpers/asyncHandler.js';
+import NotificationsController from './notifications.controller.js';
+const router = Router();
+router.post('/send', auth, role('washer_admin'), asyncHandler(NotificationsController.send));
+router.get('/me', auth, asyncHandler(NotificationsController.listMine));
+router.get('/me/unread-count', auth, asyncHandler(NotificationsController.unreadCount));
+router.put('/me/:id/read', auth, asyncHandler(NotificationsController.markRead));
+router.put('/me/read-all', auth, asyncHandler(NotificationsController.markAllRead));
+router.put('/me/:id/clicked', auth, asyncHandler(NotificationsController.markClicked));
+export default router;

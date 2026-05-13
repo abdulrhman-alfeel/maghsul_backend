@@ -1,0 +1,47 @@
+services:
+  app:
+    build: .
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-laundry_db}?schema=public
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./src:/usr/src/app/src
+      - ./bucketClooud.js:/usr/src/app/bucketClooud.js
+    command: >
+      sh -c "npx prisma migrate deploy && npx prisma generate && npm run dev"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: always
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
+      - POSTGRES_DB=${DB_NAME:-laundry_db}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-laundry_db}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: always
+
+volumes:
+  pgdata:

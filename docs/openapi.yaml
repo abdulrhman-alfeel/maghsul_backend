@@ -1,0 +1,23 @@
+openapi: 3.0.3
+info:
+  title: Laundry API
+  version: 1.2.0
+  description: API لتطبيق المغسلة والعميل والموصل
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200': { description: OK }
+  /docs:
+    get:
+      summary: Swagger UI
+      responses:
+        '200': { description: OK }
+  /api/products/upload-image:
+    post:
+      summary: Upload image
+      responses:
+        '200': { description: Uploaded }

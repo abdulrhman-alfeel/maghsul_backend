@@ -1,0 +1,376 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  customer
+  washer_admin
+  worker
+  driver
+}
+
+enum UserStatus {
+  active
+  blocked
+}
+
+enum OrderStatus {
+  // Legacy (kept for backward compatibility)
+  pending
+  accepted
+  picked_up
+  sorting
+  washing
+  ready
+  delivering
+  completed
+  cancelled
+  // Normalized lifecycle (open task claiming + laundry flow)
+  pending_pickup
+  pickup_assigned
+  driver_heading_to_pickup
+  driver_arrived_pickup
+  delivered_to_laundry
+  received_in_laundry
+  sorting_in_progress
+  sorting_confirmed
+  invoice_generated
+  payment_pending
+  payment_confirmed
+  drying
+  ironing
+  packaging
+  ready_for_delivery
+  delivery_assigned
+  driver_heading_to_delivery
+  driver_arrived_delivery
+  delivered
+}
+
+enum DriverTaskType {
+  pickup
+  delivery
+}
+
+enum DriverTaskStatus {
+  open
+  assigned
+  in_progress
+  completed
+  cancelled
+}
+
+enum PaymentMethod {
+  cash_on_delivery
+  online
+}
+
+enum PaymentStatus {
+  unpaid
+  initiated
+  paid
+  failed
+  refunded
+}
+
+model User {
+  id             String     @id @default(cuid())
+  phone          String
+  name           String?
+  role           UserRole
+  status         UserStatus @default(active)
+  washerId       String?
+  fcmToken       String?
+  deviceType     String?
+  tokenUpdatedAt DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  washer         Washer?    @relation(fields: [washerId], references: [id])
+
+  customerOrders Order[]    @relation("CustomerOrders")
+  driverOrders   Order[]    @relation("DriverOrders")
+  assignedTasks  DriverTask[]
+  notifications  Notification[] @relation("UserNotifications")
+  sentNotifications Notification[] @relation("SenderNotifications")
+
+  @@unique([phone, washerId])
+}
+
+model OtpCode {
+  id         String   @id @default(cuid())
+  phone      String
+  codeHash   String
+  expiresAt  DateTime
+  attempts   Int      @default(0)
+  verified   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([phone])
+}
+
+model Washer {
+  id          String          @id @default(cuid())
+  name        String
+  phone       String?
+  status      String          @default("active")
+  serviceLat  Float?
+  serviceLng  Float?
+  serviceRadiusMeters Int?    @default(1500)
+  /// آخر رقم طلب صُدر لهذه المغسلة (يتزايد عند كل طلب جديد)
+  nextOrderSequence Int       @default(0)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  users            User[]
+  zones            Zone[]
+  products         WasherProduct[]
+  orders           Order[]
+  schedules        WasherSchedule[]
+  paymentMethods   WasherPaymentMethod[]
+}
+
+model Zone {
+  id        String   @id @default(cuid())
+  washerId  String
+  name      String
+  city      String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  washer    Washer   @relation(fields: [washerId], references: [id])
+
+  @@index([washerId])
+}
+
+model Product {
+  id             String          @id @default(cuid())
+  name           String
+  defaultImage   String?
+  type           String?
+  isDefault      Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+
+  washerProducts WasherProduct[]
+}
+
+model WasherProduct {
+  id          String   @id @default(cuid())
+  washerId    String
+  productId   String?
+  price       Int
+  customName  String?
+  customImage String?
+
+  washer      Washer   @relation(fields: [washerId], references: [id])
+  product     Product? @relation(fields: [productId], references: [id])
+
+  @@index([washerId])
+  @@index([productId])
+}
+
+model Order {
+  id              String        @id @default(cuid())
+  customerId      String
+  washerId        String
+  driverId        String?
+  /// رقم تسلسلي ثابت لكل مغسلة (1، 2، 3… — يُعرض للعميل كأربعة أرقام)
+  publicNumber    Int
+
+  pickupLat       Float
+  pickupLng       Float
+  pickupZoneId    String?
+  pickupAddress   String?
+
+  deliveryLat     Float
+  deliveryLng     Float
+  deliveryZoneId  String?
+  deliveryAddress String?
+
+  status          OrderStatus   @default(pending)
+  paymentMethod   PaymentMethod @default(cash_on_delivery)
+  paymentStatus   PaymentStatus @default(unpaid)
+  totalPrice      Int           @default(0)
+
+  // نوع الخدمة: باقة أو غسيل بالقطعة
+  serviceType     String        @default("piece")  // "package" | "piece"
+  packageSize     String?                           // "small" | "medium" | "large" عند الباقة
+  // تفاصيل طريقة الغسيل (يختارها العميل)
+  washType        String?                           // غسيل وكوي، غسيل، تنظيف جاف
+  sortMethod      String?                           // تلقائي، طي الكل، تعليق الكل
+  perfume         Boolean       @default(false)     // عطر ملابس
+  organicSoap     Boolean       @default(false)     // صابون عضوي
+  cleaningIntensity String?                         // بدون، خفيف، متوسط، ثقيل
+  ironType        String?                           // مرام، بدون مرام، تعليق الكل (شماغ/غترة)
+  starchLevel     String?                           // بدون، خفيف، متوسط، ثقيل
+  notes           String?
+  couponCode      String?
+
+  /// جدولة الاستلام والتسليم وطريقة التواصل (من تطبيق العميل)
+  isUrgent                Boolean       @default(false)
+  pickupSlotLabel         String?
+  deliverySlotLabel       String?
+  pickupHandoffMethod     String?
+  deliveryHandoffMethod   String?
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  customer        User          @relation("CustomerOrders", fields: [customerId], references: [id])
+  washer          Washer        @relation(fields: [washerId], references: [id])
+  driver          User?         @relation("DriverOrders", fields: [driverId], references: [id])
+
+  items           OrderItem[]
+  events          OrderEvent[]
+  payments        Payment[]
+  driverTasks     DriverTask[]
+  invoices        Invoice[]
+
+  @@index([customerId])
+  @@index([washerId])
+  @@index([driverId])
+  @@index([status])
+  @@index([driverId, status])
+  @@unique([washerId, publicNumber])
+}
+
+model DriverTask {
+  id                 String           @id @default(cuid())
+  orderId            String
+  taskType           DriverTaskType
+  status             DriverTaskStatus @default(open)
+  assignedDriverId   String?
+  acceptedAt         DateTime?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  order              Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  assignedDriver     User?            @relation(fields: [assignedDriverId], references: [id])
+
+  @@index([orderId])
+  @@index([assignedDriverId])
+  @@index([status])
+  @@index([taskType])
+}
+
+model Invoice {
+  id             String        @id @default(cuid())
+  orderId        String
+  subtotal       Int           @default(0)
+  deliveryFee    Int           @default(0)
+  discount       Int           @default(0)
+  total          Int           @default(0)
+  paymentStatus  PaymentStatus @default(unpaid)
+  generatedAt    DateTime      @default(now())
+  generatedBy    String?
+
+  order          Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+}
+
+model OrderItem {
+  id              String   @id @default(cuid())
+  orderId         String
+  productId       String?
+  washerProductId String?
+  name            String
+  quantity        Int
+  price           Int
+  createdAt       DateTime @default(now())
+
+  order           Order    @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+}
+
+model OrderEvent {
+  id        String      @id @default(cuid())
+  orderId   String
+  from      OrderStatus?
+  to        OrderStatus
+  byUserId  String?
+  note      String?
+  createdAt DateTime    @default(now())
+
+  order     Order       @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+}
+
+model Payment {
+  id             String        @id @default(cuid())
+  orderId        String
+  provider       String
+  externalId     String?       @unique
+  amount         Int
+  currency       String        @default("SAR")
+  status         PaymentStatus @default(unpaid)
+  method         String?
+  transactionUrl String?
+  rawResponse    Json?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  order          Order         @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@index([status])
+}
+
+model WasherPaymentMethod {
+  id        String   @id @default(cuid())
+  washerId  String
+  method    String
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  washer    Washer   @relation(fields: [washerId], references: [id])
+
+  @@unique([washerId, method])
+  @@index([washerId])
+}
+
+model WasherSchedule {
+  id        String   @id @default(cuid())
+  washerId  String
+  day       Int
+  fromTime  String
+  toTime    String
+  enabled   Boolean  @default(true)
+
+  washer    Washer   @relation(fields: [washerId], references: [id])
+
+  @@index([washerId, day])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  senderId  String?
+  title     String
+  body      String
+  type      String
+  entityId  String?
+  orderId   String?
+  role      String?
+  payload   Json?
+  isRead    Boolean  @default(false)
+  isClicked Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User  @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+  sender User? @relation("SenderNotifications", fields: [senderId], references: [id], onDelete: SetNull)
+
+  @@index([userId, isRead, createdAt])
+  @@index([orderId, createdAt])
+  @@index([type, createdAt])
+}

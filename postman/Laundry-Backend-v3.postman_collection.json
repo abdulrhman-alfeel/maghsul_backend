@@ -1,0 +1,81 @@
+{
+  "info": {
+    "name": "Laundry Backend API v3",
+    "_postman_id": "b7f0d1f0-laundry-demo-v3",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "washerId",
+      "value": "washer_seed_main"
+    },
+    {
+      "key": "orderId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/health"
+      }
+    },
+    {
+      "name": "Send OTP",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"phone\": \"966500000004\"}"
+        },
+        "url": "{{baseUrl}}/api/auth/send-otp"
+      }
+    },
+    {
+      "name": "Verify OTP",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"phone\": \"966500000004\", \"code\": \"000000\", \"name\": \"عميل تجريبي\"}"
+        },
+        "url": "{{baseUrl}}/api/auth/verify-otp"
+      }
+    },
+    {
+      "name": "Upload Product Image",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
+        "url": "{{baseUrl}}/api/products/upload-image"
+      }
+    }
+  ]
+}
