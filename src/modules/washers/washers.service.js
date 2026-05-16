@@ -68,6 +68,26 @@ const WashersService = {
     return { washer, user, token };
   },
 
+  /** جلب كل المغاسل مع Pagination بالـ cursor */
+  async listWashersPaged(query = {}) {
+    const limitRaw = Number(query.limit ?? 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 50) : 10;
+    const cursor = query.cursor ? String(query.cursor) : null;
+
+    const rows = await prisma.washer.findMany({
+      where: { status: 'active' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
+    });
+
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const nextCursor = hasMore ? String(items[items.length - 1]?.id ?? '') : null;
+
+    return { items, nextCursor };
+  },
+
   async replaceZones(user, washerId, zones) {
     if (!user.washerId || user.washerId !== washerId) throw new ApiError(403, 'Forbidden');
     await prisma.zone.deleteMany({ where: { washerId } });

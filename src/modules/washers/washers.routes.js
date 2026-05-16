@@ -8,6 +8,9 @@ import { washerSchemas } from '../../utils/schemas.js';
 
 const router = Router();
 
+// جلب كل المغاسل المتاحة مع Pagination
+router.get('/', asyncHandler(WashersController.listWashersPaged));
+
 // إنشاء مستخدم أدمن جديد + المغسلة في طلب واحد (بدون auth للبوتستراب)
 router.post('/create', validate({ body: washerSchemas.createBody }), asyncHandler(WashersController.create));
 router.put('/:washerId/zones', auth, role('washer_admin'), validate({ body: washerSchemas.zonesBody }), asyncHandler(WashersController.replaceZones));

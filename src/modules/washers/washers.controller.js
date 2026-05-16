@@ -8,6 +8,10 @@ const WashersController = {
     return ok(res, result, 'Washer and admin created');
   },
 
+  async listWashersPaged(req, res) {
+    return ok(res, await WashersService.listWashersPaged(req.query), 'Washers list (paged)');
+  },
+
   async replaceZones(req, res) {
     return ok(res, await WashersService.replaceZones(req.user, req.params.washerId, req.body.zones || []), 'Zones replaced');
   },
