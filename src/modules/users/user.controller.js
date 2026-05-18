@@ -6,6 +6,13 @@ const UserController = {
     return ok(res, await UserService.me(req.user.userId), 'User profile');
   },
 
+  async updateMe(req, res) {
+    const userId = req.user.userId ?? req.user.id;
+    const { name, phone, avatarUrl } = req.body;
+    const updated = await UserService.updateUser(userId, { name, phone, avatarUrl });
+    return ok(res, updated, 'User profile updated');
+  },
+
   async create(req, res) {
     const user = await UserService.createUser(req.body);
     return ok(res, user, 'User saved');

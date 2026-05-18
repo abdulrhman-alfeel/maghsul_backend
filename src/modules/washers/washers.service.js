@@ -390,6 +390,54 @@ const WashersService = {
       where: { washerId },
       orderBy: [{ day: 'asc' }, { fromTime: 'asc' }],
     });
+  },
+
+  async getProfile(user, washerId) {
+    if (!user.washerId || user.washerId !== washerId) {
+      throw new ApiError(403, 'Forbidden');
+    }
+    const washer = await prisma.washer.findUnique({ where: { id: washerId } });
+    if (!washer) throw new ApiError(404, 'Washer not found');
+    return washer;
+  },
+
+  async updateProfile(user, washerId, body) {
+    if (!user.washerId || user.washerId !== washerId || user.role !== 'washer_admin') {
+      throw new ApiError(403, 'Forbidden');
+    }
+    const {
+      name,
+      phone,
+      email,
+      address,
+      logoUrl,
+      isOpen,
+      deliveryEnabled,
+      minimumOrderAmount,
+      deliveryFee,
+      notes
+    } = body;
+
+    const normalizedPhone = phone ? normalizePhone(phone) : undefined;
+
+    const washer = await prisma.washer.update({
+      where: { id: washerId },
+      data: {
+        name: name !== undefined ? name : undefined,
+        phone: normalizedPhone,
+        email: email !== undefined ? email : undefined,
+        address: address !== undefined ? address : undefined,
+        logoUrl: logoUrl !== undefined ? logoUrl : undefined,
+        isOpen: isOpen !== undefined ? !!isOpen : undefined,
+        deliveryEnabled: deliveryEnabled !== undefined ? !!deliveryEnabled : undefined,
+        minimumOrderAmount: minimumOrderAmount !== undefined ? Number(minimumOrderAmount) : undefined,
+        deliveryFee: deliveryFee !== undefined ? Number(deliveryFee) : undefined,
+        notes: notes !== undefined ? notes : undefined
+      }
+    });
+
+    await CacheService.del(`washer:profile:${washerId}`);
+    return washer;
   }
 };
 

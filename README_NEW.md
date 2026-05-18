@@ -219,3 +219,11 @@
 1. مشاهدة الطلبات المتاحة (`available-pickup`).
 2. المطالبة بالطلب وتحديث حالته لـ `picked_up` ثم `delivered_to_laundry`.
 3. المطالبة بالتوصيل (`claim-delivery`) والتحديث لـ `completed`.
+
+
+# 1. تطبيق الجداول الجديدة
+npm run db:migrate
+# 2. توليد أكواد Prisma الجديدة
+npm run db:generate
+# 3. إعادة تشغيل السيرفر (مثال باستخدام PM2)
+pm2 restart all

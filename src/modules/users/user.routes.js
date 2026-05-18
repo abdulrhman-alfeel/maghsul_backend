@@ -9,6 +9,7 @@ import UserController from './user.controller.js';
 const router = Router();
 
 router.get('/me', auth, asyncHandler(UserController.me));
+router.patch('/me', auth, validate({ body: userSchemas.updateMeBody }), asyncHandler(UserController.updateMe));
 
 router.post(
   '/',

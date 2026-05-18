@@ -27,6 +27,7 @@ import washerRoutes from './modules/washers/washers.routes.js';
 import driverRoutes from './modules/drivers/drivers.routes.js';
 import notificationRoutes from './modules/notifications/notifications.routes.js';
 import paymentRoutes from './modules/payments/payment.routes.js';
+import uploadRoutes from './modules/uploads/upload.routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -85,6 +86,7 @@ app.use('/api/washers', washerRoutes);
 app.use('/api/drivers', driverRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/payments', paymentRoutes);
+app.use('/api/uploads', uploadRoutes);
 
 // BullMQ Workers
 import './workers/notification.worker.js';

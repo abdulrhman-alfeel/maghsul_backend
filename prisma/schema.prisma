@@ -85,6 +85,7 @@ model User {
   role           UserRole
   status         UserStatus @default(active)
   washerId       String?
+  avatarUrl      String?
   fcmToken       String?
   deviceType     String?
   tokenUpdatedAt DateTime?
@@ -118,7 +119,15 @@ model Washer {
   id          String          @id @default(cuid())
   name        String
   phone       String?
+  email       String?
+  address     String?
+  logoUrl     String?
   status      String          @default("active")
+  isOpen      Boolean         @default(true)
+  deliveryEnabled Boolean     @default(true)
+  minimumOrderAmount Int      @default(0)
+  deliveryFee Int             @default(0)
+  notes       String?
   serviceLat  Float?
   serviceLng  Float?
   serviceRadiusMeters Int?    @default(1500)

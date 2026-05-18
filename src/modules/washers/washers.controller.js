@@ -114,6 +114,14 @@ const WashersController = {
 
   async saveSchedule(req, res) {
     return ok(res, await WashersService.saveSchedule(req.user, req.params.washerId, req.body.rows || []), 'Schedule saved');
+  },
+
+  async getProfile(req, res) {
+    return ok(res, await WashersService.getProfile(req.user, req.params.washerId), 'Washer profile retrieved');
+  },
+
+  async updateProfile(req, res) {
+    return ok(res, await WashersService.updateProfile(req.user, req.params.washerId, req.body), 'Washer profile updated');
   }
 };
 

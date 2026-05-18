@@ -37,5 +37,7 @@ router.get('/:washerId/location', auth, role('washer_admin'), asyncHandler(Washe
 router.put('/:washerId/location', auth, role('washer_admin'), validate({ body: washerSchemas.locationBody }), asyncHandler(WashersController.saveLocation));
 router.get('/:washerId/schedule', auth, role('washer_admin'), asyncHandler(WashersController.schedule));
 router.put('/:washerId/schedule', auth, role('washer_admin'), asyncHandler(WashersController.saveSchedule));
+router.get('/:washerId/profile', auth, role('washer_admin', 'worker'), asyncHandler(WashersController.getProfile));
+router.patch('/:washerId/profile', auth, role('washer_admin'), validate({ body: washerSchemas.updateProfileBody }), asyncHandler(WashersController.updateProfile));
 
 export default router;

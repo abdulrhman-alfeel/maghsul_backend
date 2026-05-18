@@ -23,7 +23,7 @@ const UserModel = {
   },
 
   updateById(id, data) {
-    const { phone, name, role, washerId, status, fcmToken, deviceType, tokenUpdatedAt } = data;
+    const { phone, name, role, washerId, status, fcmToken, deviceType, tokenUpdatedAt, avatarUrl } = data;
 
     return prisma.user.update({
       where: { id },
@@ -35,7 +35,8 @@ const UserModel = {
         status: status || undefined,
         fcmToken: fcmToken || undefined,
         deviceType: deviceType || undefined,
-        tokenUpdatedAt: tokenUpdatedAt || undefined
+        tokenUpdatedAt: tokenUpdatedAt || undefined,
+        avatarUrl: avatarUrl !== undefined ? avatarUrl : undefined
       }
     });
   },

@@ -101,6 +101,10 @@ export const washerSchemas = {
   staffBody: (data) => {
     if (!data?.phone || !data?.role) return result('phone and role are required');
     return result(null, data);
+  },
+  updateProfileBody: (data) => {
+    if (!data || typeof data !== 'object') return result('body is required');
+    return result(null, data);
   }
 };
 
@@ -129,6 +133,15 @@ export const userSchemas = {
     const allowedStatus = ['active', 'blocked'];
     if (status !== undefined && !allowedStatus.includes(status)) return result('invalid status');
 
+    return result(null, data);
+  },
+
+  updateMeBody: (data) => {
+    if (!data || typeof data !== 'object') return result('body is required');
+    const { name, phone, avatarUrl } = data;
+    if (name === undefined && phone === undefined && avatarUrl === undefined) {
+      return result('nothing to update');
+    }
     return result(null, data);
   }
 };
