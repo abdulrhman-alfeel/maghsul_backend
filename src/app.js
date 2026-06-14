@@ -90,6 +90,8 @@ app.use('/api/uploads', uploadRoutes);
 
 // BullMQ Workers
 import './workers/notification.worker.js';
+import './workers/accountDeletion.worker.js';
+
 
 import http from 'http';
 import { initSocket } from './config/socket.js';

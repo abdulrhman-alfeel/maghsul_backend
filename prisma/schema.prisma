@@ -17,6 +17,8 @@ enum UserRole {
 enum UserStatus {
   active
   blocked
+  pending_deletion
+  deleted
 }
 
 enum OrderStatus {
@@ -91,6 +93,13 @@ model User {
   tokenUpdatedAt DateTime?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
+
+  // ——— Account Deletion Fields ———
+  deletionRequestedAt DateTime?
+  scheduledDeletionAt DateTime?
+  deletedAt           DateTime?
+  deletionReason      String?
+  anonymizedAt        DateTime?
 
   washer         Washer?    @relation(fields: [washerId], references: [id])
 
@@ -214,8 +223,7 @@ model Order {
   sortMethod      String?                           // تلقائي، طي الكل، تعليق الكل
   perfume         Boolean       @default(false)     // عطر ملابس
   organicSoap     Boolean       @default(false)     // صابون عضوي
-  cleaningIntensity String?                         // بدون، خفيف، متوسط، ثقيل
-  ironType        String?                           // مرام، بدون مرام، تعليق الكل (شماغ/غترة)
+  ironType        String?                           // مرزام، بدون مرزام، تعليق الكل (شماغ/غترة)
   starchLevel     String?                           // بدون، خفيف، متوسط، ثقيل
   notes           String?
   couponCode      String?

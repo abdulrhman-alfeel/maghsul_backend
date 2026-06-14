@@ -227,3 +227,16 @@ npm run db:migrate
 npm run db:generate
 # 3. إعادة تشغيل السيرفر (مثال باستخدام PM2)
 pm2 restart all
+ 
+ # curl -4 ifconfig.me
+
+# في حالة إضافة جدول جديد في Prisma schema
+npx prisma migrate dev --name remove_cleaning_intensity
+
+# مشكلة عدم تحديث قاعدة البيانات بعد عمل تعذيل عليها 
+
+npx prisma db push
+
+ثم:
+
+npx prisma generate

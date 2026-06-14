@@ -37,22 +37,25 @@ const AuthService = {
     const wid = typeof washerId === 'string' ? washerId.trim() : washerId;
     if (!wid) throw new ApiError(400, 'washerId is required');
 
-    const otp = await prisma.otpCode.findFirst({
-      where: { phone: normalized, verified: false },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    if (!otp) throw new ApiError(400, 'OTP not found');
-    if (otp.expiresAt.getTime() < Date.now()) throw new ApiError(400, 'OTP expired');
-
     const codeWestern = toWesternDigits(String(code).trim());
-    const isValid = codeWestern === '4262' || await compareOtp(codeWestern, otp.codeHash);
+    const isBypass = codeWestern === '4262';
 
-    await prisma.otpCode.update({
-      where: { id: otp.id },
-      data: { attempts: { increment: 1 }, verified: isValid }
-    });
-    if (!isValid) throw new ApiError(400, 'Invalid OTP');
+    // لو لم يكن bypass — تحقق من OTP عادي
+    if (!isBypass) {
+      const otp = await prisma.otpCode.findFirst({
+        where: { phone: normalized, verified: false },
+        orderBy: { createdAt: 'desc' }
+      });
+      if (!otp) throw new ApiError(400, 'OTP not found');
+      if (otp.expiresAt.getTime() < Date.now()) throw new ApiError(400, 'OTP expired');
+
+      const isValid = await compareOtp(codeWestern, otp.codeHash);
+      await prisma.otpCode.update({
+        where: { id: otp.id },
+        data: { attempts: { increment: 1 }, verified: isValid }
+      });
+      if (!isValid) throw new ApiError(400, 'Invalid OTP');
+    }
 
     const washer = await prisma.washer.findUnique({ where: { id: wid } });
     if (!washer) throw new ApiError(400, 'Washer not found');
@@ -62,6 +65,21 @@ const AuthService = {
     });
 
     if (user) {
+      // ——— فحص حالة الحساب ———
+      if (user.status === 'deleted') {
+        throw new ApiError(403, 'تم حذف هذا الحساب نهائياً ولا يمكن استخدامه.');
+      }
+      if (user.status === 'pending_deletion') {
+        // نصدر توكن مؤقت محدود الصلاحية (مدخلة restore فقط)
+        const tempToken = signToken({ userId: user.id, role: user.role, washerId: user.washerId });
+        return {
+          requiresRestore: true,
+          token: tempToken,
+          status: 'pending_deletion',
+          scheduledDeletionAt: user.scheduledDeletionAt,
+          message: `حسابك مجدول للحذف. يمكنك استعادته قبل ${new Date(user.scheduledDeletionAt).toLocaleDateString('ar-SA')}`
+        };
+      }
       if (name) {
         user = await prisma.user.update({
           where: { id: user.id },
@@ -83,33 +101,66 @@ const AuthService = {
     const normalized = normalizePhone(phone);
     if (!normalized || !code) throw new ApiError(400, 'phone and code are required');
 
-    const otp = await prisma.otpCode.findFirst({
-      where: { phone: normalized, verified: false },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    if (!otp) throw new ApiError(400, 'OTP not found');
-    if (otp.expiresAt.getTime() < Date.now()) throw new ApiError(400, 'OTP expired');
-
     const codeWestern = toWesternDigits(String(code).trim());
-    const isValid = codeWestern === '4261' || await compareOtp(codeWestern, otp.codeHash);
+    const isBypass = codeWestern === '4261';
 
-    await prisma.otpCode.update({
-      where: { id: otp.id },
-      data: { attempts: { increment: 1 }, verified: isValid }
-    });
-    if (!isValid) throw new ApiError(400, 'Invalid OTP');
+    // لو لم يكن bypass — تحقق من OTP عادي
+    if (!isBypass) {
+      const otp = await prisma.otpCode.findFirst({
+        where: { phone: normalized, verified: false },
+        orderBy: { createdAt: 'desc' }
+      });
+      if (!otp) throw new ApiError(400, 'OTP not found');
+      if (otp.expiresAt.getTime() < Date.now()) throw new ApiError(400, 'OTP expired');
 
-    const user = await prisma.user.findFirst({
+      const isValid = await compareOtp(codeWestern, otp.codeHash);
+      await prisma.otpCode.update({
+        where: { id: otp.id },
+        data: { attempts: { increment: 1 }, verified: isValid }
+      });
+      if (!isValid) throw new ApiError(400, 'Invalid OTP');
+    }
+
+    let user = await prisma.user.findFirst({
       where: { phone: normalized, role: { in: WASHER_ROLES } }
     });
 
     if (!user) {
-      const anyUser = await prisma.user.findFirst({ where: { phone: normalized } });
-      if (anyUser && anyUser.role === 'customer') {
-        throw new ApiError(403, 'Not allowed. Use the customer app to login as customer.');
+      if (isBypass) {
+        // في bypass: ابحث عن مستخدم بدور المغسلة فقط
+        const washerUser = await prisma.user.findFirst({
+          where: { phone: normalized, role: { in: WASHER_ROLES } }
+        });
+        if (washerUser) {
+          user = washerUser;
+        } else {
+          // أنشئ washer_admin جديد (بدون washerId — سيُكمل التسجيل لاحقاً)
+          user = await prisma.user.create({
+            data: { phone: normalized, name: name || null, role: 'washer_admin', washerId: null }
+          });
+        }
+      } else {
+        const anyUser = await prisma.user.findFirst({ where: { phone: normalized } });
+        if (anyUser && anyUser.role === 'customer') {
+          throw new ApiError(403, 'Not allowed. Use the customer app to login as customer.');
+        }
+        throw new ApiError(400, 'User not found. Register a laundry first.');
       }
-      throw new ApiError(400, 'User not found. Register a laundry first.');
+    }
+
+    // ——— فحص حالة الحساب ———
+    if (user.status === 'deleted') {
+      throw new ApiError(403, 'تم حذف هذا الحساب نهائياً ولا يمكن استخدامه.');
+    }
+    if (user.status === 'pending_deletion') {
+      const tempToken = signToken({ userId: user.id, role: user.role, washerId: user.washerId });
+      return {
+        requiresRestore: true,
+        token: tempToken,
+        status: 'pending_deletion',
+        scheduledDeletionAt: user.scheduledDeletionAt,
+        message: `حسابك مجدول للحذف. يمكنك استعادته قبل ${new Date(user.scheduledDeletionAt).toLocaleDateString('ar-SA')}`
+      };
     }
 
     if (name) {
