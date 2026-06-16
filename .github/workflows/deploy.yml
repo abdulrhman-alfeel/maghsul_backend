@@ -22,16 +22,14 @@ jobs:
           port: 22
           script: |
             # 1. الذهاب لمجلد المشروع في السيرفر
-            cd /path/to/your/project/laundry-nodejs-structure-v3
+            cd ${{ secrets.DEPLOY_DIR }}
 
-            # 2. سحب آخر التحديثات من GitHub
-            git pull origin main
+            # 2. سحب التحديثات إجبارياً لتفادي أي تعارض (Merge Conflict) في السيرفر
+            git fetch --all
+            git reset --hard origin/main
 
-            # 3. بناء الحاوية الجديدة في الخلفية (والسيرفر القديم لا يزال يعمل!)
-            docker-compose build app
+            # 3. بناء وتحديث جميع الحاويات التي حصل تغيير في إعداداتها (مثل ملف docker-compose)
+            docker-compose up -d --build
 
-            # 4. استبدال الحاوية القديمة بالجديدة بسرعة (توقف لثانية أو ثانيتين فقط)
-            docker-compose up -d --no-deps app
-
-            # 5. تنظيف الصور القديمة لتوفير المساحة
+            # 4. تنظيف الصور القديمة لتوفير المساحة
             docker image prune -f
