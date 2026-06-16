@@ -22,14 +22,14 @@ jobs:
           port: 22
           script: |
             # 1. الذهاب لمجلد المشروع في السيرفر
-            cd ${{ secrets.DEPLOY_DIR }}
+            cd ${{ secrets.DEPLOY_DIR}}
 
             # 2. سحب التحديثات إجبارياً لتفادي أي تعارض (Merge Conflict) في السيرفر
             git fetch --all
             git reset --hard origin/main
 
-            # 3. بناء وتحديث جميع الحاويات التي حصل تغيير في إعداداتها (مثل ملف docker-compose)
-            docker-compose up -d --build
+            # 3. بناء وتحديث جميع الحاويات التي حصل تغيير في إعداداتها
+            docker compose up -d --build
 
             # 4. تنظيف الصور القديمة لتوفير المساحة
             docker image prune -f
