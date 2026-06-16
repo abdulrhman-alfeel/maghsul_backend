@@ -4,15 +4,11 @@ services:
     env_file:
       - .env
     environment:
-      # - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-laundry_db}?schema=public
       - REDIS_URL=redis://redis:6379
     ports:
       - "${PORT:-8080}:8080"
-    volumes:
-      - ./src:/usr/src/app/src
-      - ./bucketClooud.js:/usr/src/app/bucketClooud.js
     command: >
-      sh -c "npx prisma migrate deploy && npx prisma generate && npm run dev"
+      sh -c "npx prisma migrate deploy && npx prisma generate && npm start"
     depends_on:
       db:
         condition: service_healthy
