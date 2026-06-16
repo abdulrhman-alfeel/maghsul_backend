@@ -1,0 +1,37 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches:
+      - main # Change this if your default branch is 'master'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy to Server via SSH
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            # 1. الذهاب لمجلد المشروع في السيرفر
+            cd /path/to/your/project/laundry-nodejs-structure-v3
+
+            # 2. سحب آخر التحديثات من GitHub
+            git pull origin main
+
+            # 3. بناء الحاوية الجديدة في الخلفية (والسيرفر القديم لا يزال يعمل!)
+            docker-compose build app
+
+            # 4. استبدال الحاوية القديمة بالجديدة بسرعة (توقف لثانية أو ثانيتين فقط)
+            docker-compose up -d --no-deps app
+
+            # 5. تنظيف الصور القديمة لتوفير المساحة
+            docker image prune -f
