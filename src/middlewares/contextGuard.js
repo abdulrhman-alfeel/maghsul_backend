@@ -242,6 +242,7 @@ export async function requireStaffSession(req, res, next) {
       throw new ApiError(403, 'BRANCH_ACCESS_DENIED', 'Staff member does not have access to this branch');
     }
 
+    req.authContext.staffRole = membership.role;
     next();
   } catch (err) {
     next(err);

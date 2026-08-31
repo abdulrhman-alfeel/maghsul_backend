@@ -5,7 +5,7 @@ import { signToken } from '../../utils/jwt.js';
 import { toWesternDigits } from '../../utils/digits.js';
 import ApiError from '../../helpers/apiError.js';
 
-const WASHER_ROLES = ['washer_admin', 'worker', 'driver'];
+const WASHER_ROLES = ['washer_owner', 'washer_manager', 'branch_manager', 'worker', 'driver', 'washer_admin'];
 
 function normalizePhone(raw) {
   if (!raw) return raw;
@@ -60,40 +60,53 @@ const AuthService = {
     const washer = await prisma.washer.findUnique({ where: { id: wid } });
     if (!washer) throw new ApiError(400, 'Washer not found');
 
-    let user = await prisma.user.findUnique({
-      where: { phone_washerId: { phone: normalized, washerId: wid } }
+    let identity = await prisma.identity.findUnique({
+      where: { phone: normalized }
     });
 
-    if (user) {
-      // ——— فحص حالة الحساب ———
-      if (user.status === 'deleted') {
+    if (identity) {
+      if (identity.status === 'deleted') {
         throw new ApiError(403, 'تم حذف هذا الحساب نهائياً ولا يمكن استخدامه.');
       }
-      if (user.status === 'pending_deletion') {
-        // نصدر توكن مؤقت محدود الصلاحية (مدخلة restore فقط)
-        const tempToken = signToken({ userId: user.id, role: user.role, washerId: user.washerId });
+      if (identity.status === 'pending_deletion') {
+        const tempToken = signToken({ userId: identity.id, role: 'customer', washerId: wid });
         return {
           requiresRestore: true,
           token: tempToken,
           status: 'pending_deletion',
-          scheduledDeletionAt: user.scheduledDeletionAt,
-          message: `حسابك مجدول للحذف. يمكنك استعادته قبل ${new Date(user.scheduledDeletionAt).toLocaleDateString('ar-SA')}`
+          scheduledDeletionAt: identity.scheduledDeletionAt,
+          message: `حسابك مجدول للحذف. يمكنك استعادته قبل ${new Date(identity.scheduledDeletionAt).toLocaleDateString('ar-SA')}`
         };
       }
-      if (name) {
-        user = await prisma.user.update({
-          where: { id: user.id },
+      if (name && identity.name !== name) {
+        identity = await prisma.identity.update({
+          where: { id: identity.id },
           data: { name }
         });
       }
     } else {
-      user = await prisma.user.create({
-        data: { phone: normalized, name: name || null, role: 'customer', washerId: wid }
+      identity = await prisma.identity.create({
+        data: { phone: normalized, name: name || null }
       });
     }
 
-    const token = signToken({ userId: user.id, role: user.role, washerId: user.washerId });
-    return { token, user };
+    // Ensure customer membership exists
+    await prisma.customerMembership.upsert({
+      where: { identityId_washerId: { identityId: identity.id, washerId: wid } },
+      update: { status: 'active' },
+      create: { identityId: identity.id, washerId: wid, status: 'active' }
+    });
+
+    const userObj = {
+      id: identity.id,
+      phone: identity.phone,
+      name: identity.name,
+      role: 'customer',
+      washerId: wid,
+      status: identity.status
+    };
+    const token = signToken({ userId: identity.id, role: 'customer', washerId: wid });
+    return { token, user: userObj };
   },
 
   /** ——— تطبيق المغسلة فقط؛ لا يقبل دخول العميل ——— */
@@ -104,7 +117,6 @@ const AuthService = {
     const codeWestern = toWesternDigits(String(code).trim());
     const isBypass = codeWestern === '4261';
 
-    // لو لم يكن bypass — تحقق من OTP عادي
     if (!isBypass) {
       const otp = await prisma.otpCode.findFirst({
         where: { phone: normalized, verified: false },
@@ -121,54 +133,69 @@ const AuthService = {
       if (!isValid) throw new ApiError(400, 'Invalid OTP');
     }
 
-    let user = await prisma.user.findFirst({
-      where: { phone: normalized, role: { in: WASHER_ROLES } }
+    let identity = await prisma.identity.findUnique({
+      where: { phone: normalized },
+      include: {
+        staffMemberships: {
+          where: { status: 'active' },
+          orderBy: { createdAt: 'desc' }
+        }
+      }
     });
 
-    if (!user) {
+    if (!identity || identity.staffMemberships.length === 0) {
       if (isBypass) {
-        // في bypass: ابحث عن مستخدم بدور المغسلة فقط
-        const washerUser = await prisma.user.findFirst({
-          where: { phone: normalized, role: { in: WASHER_ROLES } }
-        });
-        if (washerUser) {
-          user = washerUser;
-        } else {
-          // أنشئ washer_admin جديد (بدون washerId — سيُكمل التسجيل لاحقاً)
-          user = await prisma.user.create({
-            data: { phone: normalized, name: name || null, role: 'washer_admin', washerId: null }
+        if (!identity) {
+          identity = await prisma.identity.create({
+            data: { phone: normalized, name: name || null }
           });
         }
       } else {
-        const anyUser = await prisma.user.findFirst({ where: { phone: normalized } });
-        if (anyUser && anyUser.role === 'customer') {
-          throw new ApiError(403, 'Not allowed. Use the customer app to login as customer.');
-        }
         throw new ApiError(400, 'User not found. Register a laundry first.');
       }
     }
 
-    // ——— فحص حالة الحساب ———
-    if (user.status === 'deleted') {
+    if (identity.status === 'deleted') {
       throw new ApiError(403, 'تم حذف هذا الحساب نهائياً ولا يمكن استخدامه.');
     }
-    if (user.status === 'pending_deletion') {
-      const tempToken = signToken({ userId: user.id, role: user.role, washerId: user.washerId });
+    if (identity.status === 'pending_deletion') {
+      const primaryStaff = identity.staffMemberships?.[0];
+      const tempToken = signToken({
+        userId: identity.id,
+        role: primaryStaff?.role || 'washer_owner',
+        washerId: primaryStaff?.washerId || null
+      });
       return {
         requiresRestore: true,
         token: tempToken,
         status: 'pending_deletion',
-        scheduledDeletionAt: user.scheduledDeletionAt,
-        message: `حسابك مجدول للحذف. يمكنك استعادته قبل ${new Date(user.scheduledDeletionAt).toLocaleDateString('ar-SA')}`
+        scheduledDeletionAt: identity.scheduledDeletionAt,
+        message: `حسابك مجدول للحذف. يمكنك استعادته قبل ${new Date(identity.scheduledDeletionAt).toLocaleDateString('ar-SA')}`
       };
     }
 
-    if (name) {
-      await prisma.user.update({ where: { id: user.id }, data: { name } });
+    if (name && identity.name !== name) {
+      identity = await prisma.identity.update({
+        where: { id: identity.id },
+        data: { name },
+        include: { staffMemberships: { where: { status: 'active' } } }
+      });
     }
-    const updated = await prisma.user.findUnique({ where: { id: user.id } });
-    const token = signToken({ userId: updated.id, role: updated.role, washerId: updated.washerId });
-    return { token, user: updated };
+
+    const primaryStaff = identity.staffMemberships?.[0];
+    const role = primaryStaff?.role || 'washer_owner';
+    const washerId = primaryStaff?.washerId || null;
+
+    const userObj = {
+      id: identity.id,
+      phone: identity.phone,
+      name: identity.name,
+      role,
+      washerId,
+      status: identity.status
+    };
+    const token = signToken({ userId: identity.id, role, washerId });
+    return { token, user: userObj };
   },
 };
 

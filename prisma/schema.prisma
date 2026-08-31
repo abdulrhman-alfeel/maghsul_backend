@@ -542,6 +542,7 @@ model Washer {
   appClients          AppClient[]
   branches            Branch[]
   orders              Order[]
+  washerProducts      WasherProduct[]
 }
 
 model Branch {
@@ -637,7 +638,27 @@ model Product {
   isDefault    Boolean  @default(true)
   createdAt    DateTime @default(now())
 
-  overrides ProductOverride[]
+  overrides      ProductOverride[]
+  washerProducts WasherProduct[]
+}
+
+model WasherProduct {
+  id          String   @id @default(cuid())
+  washerId    String
+  productId   String?
+  price       Int
+  customName  String?
+  customImage String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  washer  Washer   @relation(fields: [washerId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([washerId, productId])
+  @@index([washerId])
+  @@index([productId])
 }
 
 model ProductOverride {

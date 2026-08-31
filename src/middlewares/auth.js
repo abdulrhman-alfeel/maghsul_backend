@@ -19,19 +19,22 @@ export default async function auth(req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.authContext = decoded;
 
-    const userId = decoded.userId || decoded.id;
+    const userId = decoded.userId || decoded.id || decoded.identityId;
     if (userId) {
-      const dbUser = await prisma.user.findUnique({
+      const dbIdentity = await prisma.identity.findUnique({
         where: { id: userId },
-        select: { id: true, role: true, washerId: true, status: true }
+        include: {
+          staffMemberships: { where: { status: 'active' } },
+          customerMemberships: { where: { status: 'active' } },
+        }
       });
 
-      if (!dbUser) {
+      if (!dbIdentity) {
         return res.status(401).json({ ok: false, error: 'User record not found. Please login again.' });
       }
 
       // منع الحسابات المحذوفة نهائياً
-      if (dbUser.status === 'deleted') {
+      if (dbIdentity.status === 'deleted') {
         return res.status(403).json({
           ok: false,
           error: 'تم حذف هذا الحساب نهائياً ولا يمكن استخدامه.',
@@ -40,7 +43,7 @@ export default async function auth(req, res, next) {
       }
 
       // حسابات pending_deletion: مسموح فقط بمسارات بعينها
-      if (dbUser.status === 'pending_deletion') {
+      if (dbIdentity.status === 'pending_deletion') {
         const isAllowed = PENDING_DELETION_ALLOWED_PATHS.some(p => req.path === p || req.path.startsWith(p));
         if (!isAllowed) {
           return res.status(403).json({
@@ -51,7 +54,26 @@ export default async function auth(req, res, next) {
         }
       }
 
-      req.authContext = { ...decoded, ...dbUser, userId: dbUser.id };
+      const matchingStaff = decoded.washerId
+        ? dbIdentity.staffMemberships.find(s => s.washerId === decoded.washerId)
+        : dbIdentity.staffMemberships[0];
+
+      const resolvedRole = decoded.role || matchingStaff?.role || (dbIdentity.customerMemberships.length > 0 ? 'customer' : 'customer');
+      const resolvedWasherId = decoded.washerId || matchingStaff?.washerId || dbIdentity.customerMemberships[0]?.washerId || null;
+
+      const userContext = {
+        ...decoded,
+        id: dbIdentity.id,
+        userId: dbIdentity.id,
+        phone: dbIdentity.phone,
+        name: dbIdentity.name,
+        role: resolvedRole,
+        washerId: resolvedWasherId,
+        status: dbIdentity.status,
+      };
+
+      req.user = userContext;
+      req.authContext = userContext;
     }
 
     next();
@@ -64,4 +86,3 @@ export default async function auth(req, res, next) {
     return res.status(401).json({ ok: false, error: 'Invalid token' });
   }
 }
-

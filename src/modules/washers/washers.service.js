@@ -53,16 +53,25 @@ const WashersService = {
       data: { name: washerName, phone: normalizedWasherPhone }
     });
 
-    const user = await prisma.user.upsert({
-      where: { phone_washerId: { phone: normalizedAdminPhone, washerId: washer.id } },
-      update: { name: adminName || undefined, role: 'washer_admin' },
-      create: {
-        phone: normalizedAdminPhone,
-        name: adminName || null,
-        role: 'washer_admin',
-        washerId: washer.id
-      }
+    const identity = await prisma.identity.upsert({
+      where: { phone: normalizedAdminPhone },
+      update: { name: adminName || undefined },
+      create: { phone: normalizedAdminPhone, name: adminName || null }
     });
+
+    const staffMembership = await prisma.staffMembership.upsert({
+      where: { identityId_washerId: { identityId: identity.id, washerId: washer.id } },
+      update: { role: 'washer_owner', status: 'active', hasFullWasherAccess: true },
+      create: { identityId: identity.id, washerId: washer.id, role: 'washer_owner', status: 'active', hasFullWasherAccess: true }
+    });
+
+    const user = {
+      id: identity.id,
+      phone: identity.phone,
+      name: identity.name,
+      role: staffMembership.role,
+      washerId: washer.id
+    };
 
     const token = signToken({ userId: user.id, role: user.role, washerId: user.washerId });
     return { washer, user, token };
@@ -482,11 +491,26 @@ const WashersService = {
     const normalizedPhone = normalizePhone(phone);
     if (!normalizedPhone) throw new ApiError(400, 'phone_required', 'phone is required');
 
-    return prisma.user.upsert({
-      where: { phone_washerId: { phone: normalizedPhone, washerId } },
-      update: { name: name || undefined, role },
-      create: { phone: normalizedPhone, name: name || null, role, washerId }
+    const mappedRole = role === 'washer_admin' ? 'washer_manager' : role;
+    const identity = await prisma.identity.upsert({
+      where: { phone: normalizedPhone },
+      update: { name: name || undefined },
+      create: { phone: normalizedPhone, name: name || null }
     });
+
+    const staffMembership = await prisma.staffMembership.upsert({
+      where: { identityId_washerId: { identityId: identity.id, washerId } },
+      update: { role: mappedRole, status: 'active' },
+      create: { identityId: identity.id, washerId, role: mappedRole, status: 'active' }
+    });
+
+    return {
+      id: identity.id,
+      phone: identity.phone,
+      name: identity.name,
+      role: staffMembership.role,
+      washerId
+    };
   },
 
   async getSchedule(user, washerId) {

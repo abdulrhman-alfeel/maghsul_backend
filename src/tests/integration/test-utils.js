@@ -58,6 +58,7 @@ export async function setupTestDb() {
     await prisma.customerMembership.deleteMany();
     await prisma.auditLog.deleteMany();
     await prisma.userDevice.deleteMany();
+    await prisma.washerProduct.deleteMany();
     await prisma.productOverride.deleteMany();
     await prisma.branchSchedule.deleteMany();
     await prisma.branchPaymentMethod.deleteMany();

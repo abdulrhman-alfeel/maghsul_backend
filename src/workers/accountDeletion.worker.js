@@ -18,6 +18,94 @@ const connection = ioredis;
 let deletionQueue = null;
 let worker = null;
 
+/**
+ * Standalone executor for account deletion cleanup.
+ * Can be called by the BullMQ worker or directly in integration tests.
+ *
+ * @param {Date} [referenceDate]
+ * @returns {Promise<{ processed: number, successCount: number, errorCount: number }>}
+ */
+export async function executeAccountDeletionCleanup(referenceDate = new Date()) {
+  const now = referenceDate;
+
+  // جلب جميع الهويات المجدولة للحذف التي انتهت مهلتها
+  const expiredIdentities = await prisma.identity.findMany({
+    where: {
+      status: 'pending_deletion',
+      scheduledDeletionAt: { lte: now },
+    },
+    select: { id: true, name: true, phone: true },
+  });
+
+  if (expiredIdentities.length === 0) {
+    logger.info('AccountDeletion: No expired accounts found');
+    return { processed: 0, successCount: 0, errorCount: 0 };
+  }
+
+  logger.info(`AccountDeletion: Found ${expiredIdentities.length} accounts to anonymize`);
+
+  let successCount = 0;
+  let errorCount = 0;
+
+  for (const identity of expiredIdentities) {
+    try {
+      const anonSuffix = randomBytes(12).toString('hex'); // 24 hex characters
+
+      await prisma.$transaction([
+        // 1. Anonymize Identity
+        prisma.identity.update({
+          where: { id: identity.id },
+          data: {
+            status: 'deleted',
+            name: 'مستخدم محذوف',
+            phone: `anon_${anonSuffix}`,
+            avatarUrl: null,
+            deletedAt: now,
+            anonymizedAt: now,
+          },
+        }),
+        // 2. Revoke all active Sessions
+        prisma.session.updateMany({
+          where: { identityId: identity.id, isRevoked: false },
+          data: {
+            isRevoked: true,
+            revokedReason: 'account_deleted',
+            revokedAt: now,
+          },
+        }),
+        // 3. Revoke all active RefreshTokens
+        prisma.refreshToken.updateMany({
+          where: { session: { identityId: identity.id }, isRevoked: false },
+          data: {
+            isRevoked: true,
+            revokedReason: 'account_deleted',
+            revokedAt: now,
+          },
+        }),
+        // 4. Invalidate User Devices
+        prisma.userDevice.updateMany({
+          where: { identityId: identity.id },
+          data: {
+            tokenStatus: 'invalid',
+            fcmToken: null,
+          },
+        }),
+      ]);
+
+      logger.info(`AccountDeletion: Anonymized identity ${identity.id}`);
+      successCount++;
+    } catch (err) {
+      logger.error(`AccountDeletion: Failed to anonymize identity ${identity.id}`, {
+        error: err.message,
+      });
+      errorCount++;
+    }
+  }
+
+  logger.info(`AccountDeletion: Cleanup complete — success: ${successCount}, errors: ${errorCount}`);
+  return { processed: expiredIdentities.length, successCount, errorCount };
+}
+
 // نتأكد من تسجيل الـ Job مرة واحدة فقط عند بدء التشغيل
 async function scheduleCleanupJob() {
   try {
@@ -48,75 +136,22 @@ export async function startAccountDeletionWorker() {
   worker = new Worker(
     QUEUE_NAME,
     async (job) => {
-    logger.info('AccountDeletion: Starting cleanup job', { jobId: job.id });
-
-    const now = new Date();
-
-    // جلب جميع الحسابات المجدولة للحذف التي انتهت مهلتها
-    const expiredUsers = await prisma.user.findMany({
-      where: {
-        status: 'pending_deletion',
-        scheduledDeletionAt: { lte: now },
-      },
-      select: { id: true, name: true, role: true, washerId: true },
-    });
-
-    if (expiredUsers.length === 0) {
-      logger.info('AccountDeletion: No expired accounts found');
-      return;
+      logger.info('AccountDeletion: Starting cleanup job', { jobId: job.id });
+      await executeAccountDeletionCleanup(new Date());
+    },
+    {
+      connection,
+      concurrency: 1, // معالجة واحدة في كل مرة لضمان السلامة
     }
+  );
 
-    logger.info(`AccountDeletion: Found ${expiredUsers.length} accounts to anonymize`);
+  worker.on('completed', (job) => {
+    logger.info('AccountDeletion: Job completed', { jobId: job.id });
+  });
 
-    let successCount = 0;
-    let errorCount = 0;
-
-    for (const user of expiredUsers) {
-      try {
-        // anonymization: بيانات عشوائية لا تحتوي أي معلومة حقيقية
-        const anonSuffix = randomBytes(12).toString('hex'); // 24 حرف عشوائي
-
-        await prisma.user.update({
-          where: { id: user.id },
-          data: {
-            status: 'deleted',
-            name: 'مستخدم محذوف',
-            // phone يصبح سلسلة عشوائية لكسر unique constraint بأمان
-            phone: `anon_${anonSuffix}`,
-            fcmToken: null,
-            deviceType: null,
-            tokenUpdatedAt: null,
-            avatarUrl: null,
-            deletedAt: now,
-            anonymizedAt: now,
-          },
-        });
-
-        logger.info(`AccountDeletion: Anonymized user ${user.id} (role: ${user.role})`);
-        successCount++;
-      } catch (err) {
-        logger.error(`AccountDeletion: Failed to anonymize user ${user.id}`, {
-          error: err.message,
-        });
-        errorCount++;
-      }
-    }
-
-    logger.info(`AccountDeletion: Cleanup complete — success: ${successCount}, errors: ${errorCount}`);
-  },
-  {
-    connection,
-    concurrency: 1, // معالجة واحدة في كل مرة لضمان السلامة
-  }
-);
-
-worker.on('completed', (job) => {
-  logger.info('AccountDeletion: Job completed', { jobId: job.id });
-});
-
-worker.on('failed', (job, err) => {
-  logger.error('AccountDeletion: Job failed', { jobId: job?.id, error: err.message });
-});
+  worker.on('failed', (job, err) => {
+    logger.error('AccountDeletion: Job failed', { jobId: job?.id, error: err.message });
+  });
 }
 
 export async function stopAccountDeletionWorker() {

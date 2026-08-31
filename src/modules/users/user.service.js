@@ -38,15 +38,44 @@ const UserService = {
 
   async upsertFcmToken(userId, payload) {
     try {
-      const { fcmToken, deviceType } = payload || {};
+      const { fcmToken, deviceType, applicationId, installationId, platform, model } = payload || {};
       if (!fcmToken) return null;
-      return await UserModel.updateById(userId, {
-        fcmToken: String(fcmToken),
-        deviceType: deviceType ? String(deviceType) : null,
-        tokenUpdatedAt: new Date(),
+
+      const identity = await prisma.identity.findUnique({ where: { id: userId } });
+      if (!identity) return null;
+
+      const appId = applicationId || 'com.laundry.customer';
+      const instId = installationId || `inst_${userId}_${deviceType || 'generic'}`;
+
+      return await prisma.userDevice.upsert({
+        where: {
+          installationId_applicationId: {
+            installationId: instId,
+            applicationId: appId,
+          }
+        },
+        update: {
+          identityId: userId,
+          fcmToken: String(fcmToken),
+          tokenStatus: 'active',
+          platform: platform || (deviceType === 'ios' ? 'ios' : 'android'),
+          model: model || null,
+          lastSeenAt: new Date(),
+        },
+        create: {
+          identityId: userId,
+          applicationId: appId,
+          installationId: instId,
+          appType: 'customer',
+          platform: platform || (deviceType === 'ios' ? 'ios' : 'android'),
+          fcmToken: String(fcmToken),
+          tokenStatus: 'active',
+          model: model || null,
+          lastSeenAt: new Date(),
+        }
       });
     } catch (err) {
-      console.warn(`UserService: Failed to upsert FCM token for user ${userId}.`);
+      console.warn(`UserService: Failed to upsert FCM token for identity ${userId}:`, err.message);
       return null;
     }
   },
@@ -59,28 +88,34 @@ const UserService = {
    * طلب حذف الحساب — يضع الحساب في pending_deletion لمدة 30 يومًا.
    */
   async requestAccountDeletion(userId, { reason } = {}) {
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new ApiError(404, 'User not found');
-    if (user.status === 'deleted') throw new ApiError(400, 'account_already_deleted', 'Account already deleted');
-    if (user.status === 'pending_deletion') {
+    const identity = await prisma.identity.findUnique({ where: { id: userId } });
+    if (!identity) throw new ApiError(404, 'User not found');
+    if (identity.status === 'deleted') throw new ApiError(400, 'account_already_deleted', 'Account already deleted');
+    if (identity.status === 'pending_deletion') {
       throw new ApiError(400, 'account_scheduled_for_deletion', 'Account is already scheduled for deletion');
     }
 
     const now = new Date();
     const scheduledDeletionAt = new Date(now.getTime() + DELETION_DAYS * 24 * 60 * 60 * 1000);
 
-    const updated = await prisma.user.update({
-      where: { id: userId },
-      data: {
-        status: 'pending_deletion',
-        deletionRequestedAt: now,
-        scheduledDeletionAt,
-        deletionReason: reason || null,
-        // إلغاء FCM token فورًا — لا إشعارات جديدة
-        fcmToken: null,
-        deviceType: null,
-        tokenUpdatedAt: null,
-      },
+    const updated = await prisma.$transaction(async (tx) => {
+      const idty = await tx.identity.update({
+        where: { id: userId },
+        data: {
+          status: 'pending_deletion',
+          deletionRequestedAt: now,
+          scheduledDeletionAt,
+          deletionReason: reason || null,
+        },
+      });
+
+      // Invalidate devices immediately
+      await tx.userDevice.updateMany({
+        where: { identityId: userId },
+        data: { tokenStatus: 'invalid', fcmToken: null }
+      });
+
+      return idty;
     });
 
     return {
@@ -95,19 +130,25 @@ const UserService = {
    * استعادة الحساب — يُرجع status إلى active ويُصفّر حقول الحذف.
    */
   async restoreAccount(userId) {
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new ApiError(404, 'User not found');
-    if (user.status === 'deleted') {
+    const identity = await prisma.identity.findUnique({
+      where: { id: userId },
+      include: {
+        staffMemberships: { where: { status: 'active' } },
+        customerMemberships: { where: { status: 'active' } }
+      }
+    });
+    if (!identity) throw new ApiError(404, 'User not found');
+    if (identity.status === 'deleted') {
       throw new ApiError(403, 'account_permanently_deleted', 'تم حذف هذا الحساب نهائياً ولا يمكن استعادته.');
     }
-    if (user.status !== 'pending_deletion') {
+    if (identity.status !== 'pending_deletion') {
       throw new ApiError(400, 'account_not_pending_deletion', 'الحساب ليس في حالة الحذف المعلق.');
     }
-    if (user.scheduledDeletionAt && new Date() > user.scheduledDeletionAt) {
+    if (identity.scheduledDeletionAt && new Date() > identity.scheduledDeletionAt) {
       throw new ApiError(403, 'restore_period_expired', 'انتهت مهلة الاستعادة. تم حذف الحساب نهائياً.');
     }
 
-    const restored = await prisma.user.update({
+    const restored = await prisma.identity.update({
       where: { id: userId },
       data: {
         status: 'active',
@@ -119,12 +160,24 @@ const UserService = {
       },
     });
 
-    const token = signToken({ userId: restored.id, role: restored.role, washerId: restored.washerId });
+    const primaryStaff = identity.staffMemberships?.[0];
+    const role = primaryStaff?.role || 'customer';
+    const washerId = primaryStaff?.washerId || identity.customerMemberships?.[0]?.washerId || null;
+
+    const token = signToken({ userId: restored.id, role, washerId });
     return {
       success: true,
       message: 'تم استعادة حسابك بنجاح. يمكنك الآن استخدام التطبيق بشكل طبيعي.',
       token,
-      user: restored,
+      user: {
+        id: restored.id,
+        phone: restored.phone,
+        name: restored.name,
+        avatarUrl: restored.avatarUrl,
+        status: restored.status,
+        role,
+        washerId,
+      },
     };
   },
 
@@ -132,20 +185,20 @@ const UserService = {
    * حالة الحذف — للفرونت لعرض تفاصيل pending_deletion.
    */
   async getDeletionStatus(userId) {
-    const user = await prisma.user.findUnique({
+    const identity = await prisma.identity.findUnique({
       where: { id: userId },
       select: { status: true, scheduledDeletionAt: true, deletionRequestedAt: true },
     });
-    if (!user) throw new ApiError(404, 'User not found');
+    if (!identity) throw new ApiError(404, 'User not found');
 
-    const canRestore = user.status === 'pending_deletion' &&
-      user.scheduledDeletionAt &&
-      new Date() < user.scheduledDeletionAt;
+    const canRestore = identity.status === 'pending_deletion' &&
+      identity.scheduledDeletionAt &&
+      new Date() < identity.scheduledDeletionAt;
 
     return {
-      status: user.status,
-      scheduledDeletionAt: user.scheduledDeletionAt,
-      deletionRequestedAt: user.deletionRequestedAt,
+      status: identity.status,
+      scheduledDeletionAt: identity.scheduledDeletionAt,
+      deletionRequestedAt: identity.deletionRequestedAt,
       canRestore: !!canRestore,
     };
   },
@@ -154,18 +207,28 @@ const UserService = {
    * جلب موظفي المغسلة — لاختيار مدير بديل قبل الحذف.
    */
   async getWasherStaff(washerId, excludeUserId) {
-    return prisma.user.findMany({
+    const memberships = await prisma.staffMembership.findMany({
       where: {
         washerId,
-        id: { not: excludeUserId },
+        identityId: { not: excludeUserId },
         status: 'active',
-        role: { in: ['washer_admin', 'worker', 'driver'] }, // فقط موظفو المغسلة
       },
-      select: { id: true, name: true, phone: true, role: true },
+      include: {
+        identity: {
+          select: { id: true, name: true, phone: true, status: true }
+        }
+      },
       orderBy: { createdAt: 'asc' },
     });
+
+    return memberships.map(m => ({
+      id: m.identity.id,
+      name: m.identity.name,
+      phone: m.identity.phone,
+      role: m.role,
+      status: m.identity.status
+    }));
   },
 };
 
 export default UserService;
-

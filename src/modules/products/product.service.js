@@ -30,32 +30,55 @@ const ProductService = {
     if (!washer) throw new ApiError(404, 'Washer not found');
 
     const { id, productId, price, customName, customImage } = body;
+
+    // Price validation
+    if (price === undefined || price === null) {
+      throw new ApiError(400, 'price is required');
+    }
     const priceStr = typeof price === 'number' ? String(price) : toWesternDigits(String(price ?? ''));
-    const priceInt = Math.round(Number(priceStr));
-    if (!Number.isFinite(priceInt) || priceInt < 0) throw new ApiError(400, 'price must be a valid non-negative number');
+    const priceNum = Number(priceStr);
+    if (!Number.isFinite(priceNum) || !Number.isInteger(priceNum) || priceNum < 0) {
+      throw new ApiError(400, 'price must be a valid non-negative integer');
+    }
+    const priceInt = priceNum;
 
     let result;
     if (id) {
-        // Direct update by ID (works for both predefined and custom)
-        const updateData = { price: priceInt };
-        if (!productId) {
-            // If it's a custom product, allow name/image update too
-            if (customName) updateData.customName = customName.trim();
-            if (customImage) updateData.customImage = customImage.trim();
-            if (!updateData.customName && !customName) {
-                // If it's a new custom item without a name, it's invalid
-                // but since ID exists, we just update what's changed.
-            }
+      const existing = await prisma.washerProduct.findUnique({ where: { id } });
+      if (!existing || existing.washerId !== washerId) {
+        throw new ApiError(404, 'Washer product not found');
+      }
+
+      const updateData = { price: priceInt };
+      if (!existing.productId) {
+        // Custom product edit
+        if (customName !== undefined) {
+          const nameTrimmed = typeof customName === 'string' ? customName.trim() : '';
+          if (!nameTrimmed) throw new ApiError(400, 'customName must be non-empty for custom product');
+          updateData.customName = nameTrimmed;
         }
-        result = await ProductModel.updateWasherProduct(id, updateData);
+        if (customImage !== undefined) {
+          updateData.customImage = typeof customImage === 'string' && customImage.trim() ? customImage.trim() : null;
+        }
+      }
+      result = await ProductModel.updateWasherProduct(id, updateData);
     } else if (productId) {
+      // Platform product customization
+      const prod = await prisma.product.findUnique({ where: { id: productId } });
+      if (!prod) throw new ApiError(404, 'Platform product not found');
+
       const existing = await ProductModel.findWasherProductByWasherAndProduct(washerId, productId);
       if (existing) {
         result = await ProductModel.updateWasherProduct(existing.id, { price: priceInt });
       } else {
-        result = await ProductModel.createWasherProduct({ washerId, productId, price: priceInt });
+        result = await ProductModel.createWasherProduct({
+          washerId,
+          productId,
+          price: priceInt
+        });
       }
     } else {
+      // Independent custom product
       const nameToSave = typeof customName === 'string' ? customName.trim() : null;
       if (!nameToSave) throw new ApiError(400, 'customName is required for custom product');
 
@@ -67,9 +90,9 @@ const ProductService = {
       });
     }
 
-    // Invalidate cache
+    // Invalidate washer products cache
     await CacheService.del(`products:washer:${washerId}`);
-    
+
     return result;
   }
 };
