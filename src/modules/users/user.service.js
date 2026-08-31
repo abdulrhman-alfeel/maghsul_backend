@@ -61,9 +61,9 @@ const UserService = {
   async requestAccountDeletion(userId, { reason } = {}) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new ApiError(404, 'User not found');
-    if (user.status === 'deleted') throw new ApiError(400, 'Account already deleted');
+    if (user.status === 'deleted') throw new ApiError(400, 'account_already_deleted', 'Account already deleted');
     if (user.status === 'pending_deletion') {
-      throw new ApiError(400, 'Account is already scheduled for deletion');
+      throw new ApiError(400, 'account_scheduled_for_deletion', 'Account is already scheduled for deletion');
     }
 
     const now = new Date();
@@ -98,13 +98,13 @@ const UserService = {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new ApiError(404, 'User not found');
     if (user.status === 'deleted') {
-      throw new ApiError(403, 'تم حذف هذا الحساب نهائياً ولا يمكن استعادته.');
+      throw new ApiError(403, 'account_permanently_deleted', 'تم حذف هذا الحساب نهائياً ولا يمكن استعادته.');
     }
     if (user.status !== 'pending_deletion') {
-      throw new ApiError(400, 'الحساب ليس في حالة الحذف المعلق.');
+      throw new ApiError(400, 'account_not_pending_deletion', 'الحساب ليس في حالة الحذف المعلق.');
     }
     if (user.scheduledDeletionAt && new Date() > user.scheduledDeletionAt) {
-      throw new ApiError(403, 'انتهت مهلة الاستعادة. تم حذف الحساب نهائياً.');
+      throw new ApiError(403, 'restore_period_expired', 'انتهت مهلة الاستعادة. تم حذف الحساب نهائياً.');
     }
 
     const restored = await prisma.user.update({

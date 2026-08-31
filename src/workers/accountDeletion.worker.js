@@ -15,8 +15,8 @@ import logger from '../config/logger.js';
 const QUEUE_NAME = 'accountDeletion';
 const connection = ioredis;
 
-// ── إنشاء Queue وإضافة Job متكرر (يومي الساعة 2 صباحاً) ──────────────
-const deletionQueue = new Queue(QUEUE_NAME, { connection });
+let deletionQueue = null;
+let worker = null;
 
 // نتأكد من تسجيل الـ Job مرة واحدة فقط عند بدء التشغيل
 async function scheduleCleanupJob() {
@@ -39,12 +39,15 @@ async function scheduleCleanupJob() {
   }
 }
 
-scheduleCleanupJob();
+export async function startAccountDeletionWorker() {
+  if (worker || deletionQueue) return;
 
-// ── Worker الذي ينفذ الحذف الفعلي ─────────────────────────────────────
-const worker = new Worker(
-  QUEUE_NAME,
-  async (job) => {
+  deletionQueue = new Queue(QUEUE_NAME, { connection });
+  await scheduleCleanupJob();
+
+  worker = new Worker(
+    QUEUE_NAME,
+    async (job) => {
     logger.info('AccountDeletion: Starting cleanup job', { jobId: job.id });
 
     const now = new Date();
@@ -114,5 +117,17 @@ worker.on('completed', (job) => {
 worker.on('failed', (job, err) => {
   logger.error('AccountDeletion: Job failed', { jobId: job?.id, error: err.message });
 });
+}
+
+export async function stopAccountDeletionWorker() {
+  if (worker) {
+    await worker.close();
+    worker = null;
+  }
+  if (deletionQueue) {
+    await deletionQueue.close();
+    deletionQueue = null;
+  }
+}
 
 export default worker;

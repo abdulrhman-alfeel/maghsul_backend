@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import auth from '../../middlewares/auth.js';
 import role from '../../middlewares/role.js';
+import { contextGuard, requireStaffSession } from '../../middlewares/contextGuard.js';
 import asyncHandler from '../../helpers/asyncHandler.js';
 import validate from '../../middlewares/validate.js';
 import WashersController from './washers.controller.js';
@@ -13,8 +14,8 @@ router.get('/', asyncHandler(WashersController.listWashersPaged));
 
 // إنشاء مستخدم أدمن جديد + المغسلة في طلب واحد (بدون auth للبوتستراب)
 router.post('/create', validate({ body: washerSchemas.createBody }), asyncHandler(WashersController.create));
-router.put('/:washerId/zones', auth, role('washer_admin'), validate({ body: washerSchemas.zonesBody }), asyncHandler(WashersController.replaceZones));
-router.get('/:washerId/zones', asyncHandler(WashersController.listZones));
+router.get('/:washerId/branches', auth, role('washer_admin', 'worker'), asyncHandler(WashersController.listBranches));
+
 router.get('/:washerId/orders/pending', auth, role('washer_admin', 'worker'), asyncHandler(WashersController.pendingOrders));
 router.get('/:washerId/orders/to-receive', auth, role('washer_admin', 'worker'), asyncHandler(WashersController.ordersToReceive));
 router.get('/:washerId/orders/to-sort', auth, role('washer_admin', 'worker'), asyncHandler(WashersController.ordersToSort));

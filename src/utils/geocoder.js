@@ -1,6 +1,10 @@
 import fetch from 'node-fetch';
 
 export async function reverseGeocode(lat, lng) {
+  if (process.env.NODE_ENV === 'test') {
+    return 'Mocked Test Address';
+  }
+
   try {
     const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&accept-language=ar`, {
       headers: {

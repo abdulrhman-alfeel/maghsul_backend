@@ -16,3 +16,5 @@ firebase-service-account.json
 maghsul-dbf163939c57.json
 
 prisma/dev.db
+.env.test
+db_backup_before_reset.sql

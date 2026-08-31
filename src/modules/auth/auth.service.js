@@ -19,7 +19,7 @@ function normalizePhone(raw) {
 const AuthService = {
   async sendOtp({ phone }) {
     const normalized = normalizePhone(phone);
-    if (!normalized) throw new ApiError(400, 'phone is required');
+    if (!normalized) throw new ApiError(400, 'phone_required', 'phone is required');
 
     const code = generateOtp();
     const codeHash = await hashOtp(code);

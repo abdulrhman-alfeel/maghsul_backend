@@ -12,12 +12,20 @@ const WashersController = {
     return ok(res, await WashersService.listWashersPaged(req.query), 'Washers list (paged)');
   },
 
-  async replaceZones(req, res) {
-    return ok(res, await WashersService.replaceZones(req.user, req.params.washerId, req.body.zones || []), 'Zones replaced');
+  async listBranches(req, res) {
+    return ok(res, await WashersService.listBranches(req.params.washerId), 'Washer branches list');
   },
 
-  async listZones(req, res) {
-    return ok(res, await WashersService.listZones(req.params.washerId), 'Coverage zones');
+  async getBranchCoverage(req, res) {
+    return ok(res, await WashersService.getBranchCoverage(req.authContext, req.params.branchId), 'Branch coverage zones');
+  },
+
+  async replaceBranchCoverage(req, res) {
+    return ok(res, await WashersService.replaceBranchCoverage(req.authContext, req.params.branchId, req.body.zones || []), 'Branch coverage zones replaced');
+  },
+
+  async clearBranchCoverage(req, res) {
+    return ok(res, await WashersService.clearBranchCoverage(req.authContext, req.params.branchId), 'Branch coverage zones cleared');
   },
 
   async paymentMethods(req, res) {

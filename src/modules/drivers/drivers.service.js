@@ -3,6 +3,7 @@ import ApiError from '../../helpers/apiError.js';
 import OrderModel from '../orders/order.model.js';
 import OrderService from '../orders/order.service.js';
 import NotificationsService from '../notifications/notifications.service.js';
+import { RealtimeOutboxService } from '../realtime/realtime-outbox.service.js';
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
@@ -48,7 +49,7 @@ const DriversService = {
 
     const rows = await prisma.order.findMany({
       where: {
-        driverId,
+        driverStaffMembershipId: driverId,
         status: {
           in: statusIn,
         },
@@ -68,7 +69,7 @@ const DriversService = {
   async deliveryCart(driverId) {
     const orders = await prisma.order.findMany({
       where: {
-        driverId,
+        driverStaffMembershipId: driverId,
         status: { in: ['picked_up', 'delivering', 'delivery_assigned', 'driver_heading_to_delivery', 'driver_arrived_delivery'] }
       },
       include: { items: true, payments: { orderBy: { createdAt: 'desc' }, take: 1 }, customer: true },
@@ -89,7 +90,7 @@ const DriversService = {
   /** Open pickup tasks + legacy orders. Pagination: limit (default 10), afterId. */
   async availablePickup(user, opts = {}) {
     const canDrive = (user.role === 'driver' || user.role === 'washer_admin' || user.role === 'worker') && user.washerId;
-    if (!canDrive) throw new ApiError(403, 'Forbidden');
+    if (!canDrive) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const limitRaw = Number(opts.limit ?? DEFAULT_LIMIT);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), MAX_LIMIT) : DEFAULT_LIMIT;
@@ -111,7 +112,7 @@ const DriversService = {
       prisma.order.findMany({
         where: {
           washerId: user.washerId,
-          driverId: null,
+          driverStaffMembershipId: null,
           status: { in: ['accepted', 'pending_pickup'] }
         },
         include: { customer: true, items: true },
@@ -139,7 +140,7 @@ const DriversService = {
   },
   // async availablePickup(user) {
   //   if (user.role !== 'driver' || !user.washerId) {
-  //     throw new ApiError(403, 'Forbidden');
+  //     throw new ApiError(403, 'forbidden', 'Forbidden');
   //   }
 
   //   const tasks = await prisma.driverTask.findMany({
@@ -160,7 +161,7 @@ const DriversService = {
   //     where: {
   //       washerId: user.washerId,
   //       status: { in: ['accepted', 'pending_pickup'] },
-  //       driverId: null
+  //       driverStaffMembershipId: null
   //     },
   //     include: { customer: true, items: true },
   //     orderBy: { createdAt: 'asc' }
@@ -170,7 +171,7 @@ const DriversService = {
   /** Atomic claim of a pickup task. Only one driver can claim. */
   async claimPickupTask(user, taskId) {
     const canDrive = (user.role === 'driver' || user.role === 'washer_admin' || user.role === 'worker') && user.washerId;
-    if (!canDrive) throw new ApiError(403, 'Forbidden');
+    if (!canDrive) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const task = await prisma.driverTask.findUnique({
       where: { id: taskId },
@@ -179,49 +180,70 @@ const DriversService = {
     if (!task) throw new ApiError(404, 'Task not found');
     if (task.taskType !== 'pickup') throw new ApiError(400, 'Not a pickup task');
     if (task.status !== 'open') throw new ApiError(400, 'Task already claimed');
-    if (task.order.washerId !== user.washerId) throw new ApiError(403, 'Forbidden');
+    if (task.order.washerId !== user.washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const updated = await prisma.$transaction(async (tx) => {
       await tx.driverTask.update({
         where: { id: taskId },
-        data: { status: 'assigned', assignedDriverId: user.userId, acceptedAt: new Date() }
+        data: { status: 'assigned', assignedDriverId: user.staffMembershipId || user.userId, acceptedAt: new Date() }
       });
       const order = await tx.order.update({
         where: { id: task.orderId },
-        data: { driverId: user.userId, status: 'pickup_assigned' }
+        data: { driverStaffMembershipId: user.staffMembershipId || user.userId, status: 'pickup_assigned' }
       });
       await tx.orderEvent.create({
         data: { orderId: order.id, to: 'pickup_assigned', byUserId: user.userId, note: 'driver_claimed_pickup' }
       });
-      return OrderModel.findById(order.id);
+
+      await RealtimeOutboxService.safeCreateEvent(tx, {
+        eventKey: `driver-task-updated-${taskId}-${Date.now()}`,
+        eventType: 'driver_task.updated',
+        eventKind: 'client_event',
+        aggregateType: 'DriverTask',
+        aggregateId: taskId,
+        status: 'pending'
+      });
+
+      await RealtimeOutboxService.safeCreateEvent(tx, {
+        eventKey: `order-status-updated-${task.orderId}-pickup_assigned-${Date.now()}`,
+        eventType: 'order.status_updated',
+        eventKind: 'client_event',
+        aggregateType: 'Order',
+        aggregateId: task.orderId,
+        status: 'pending'
+      });
+
+      return order.id;
     });
 
+    const finalOrder = await OrderModel.findById(updated);
+
     await NotificationsService.createAndSendNotification({
-      userId: updated.customerId,
-      orderId: updated.id,
+      userId: finalOrder.customerMembership.identityId,
+      orderId: finalOrder.id,
       role: 'customer',
       title: 'تم تعيين سائق للاستلام',
-      body: `تم تعيين سائق لطلبك #${String(updated.publicNumber).padStart(4, '0')}`,
+      body: `تم تعيين سائق لطلبك #${String(finalOrder.publicNumber).padStart(4, '0')}`,
       type: 'pickup_assigned',
-      payload: { targetScreen: 'OrderDetails', orderId: updated.id },
+      payload: { targetScreen: 'OrderDetails', orderId: finalOrder.id },
     }).catch(() => {});
     await NotificationsService.createAndSendNotification({
       userId: user.userId,
-      orderId: updated.id,
+      orderId: finalOrder.id,
       role: 'driver',
       title: 'تم إسناد مهمة استلام',
-      body: `استلمت مهمة استلام الطلب #${String(updated.publicNumber).padStart(4, '0')}`,
+      body: `استلمت مهمة استلام الطلب #${String(finalOrder.publicNumber).padStart(4, '0')}`,
       type: 'pickup_assigned',
-      payload: { targetScreen: 'DriverOrderDetails', orderId: updated.id },
+      payload: { targetScreen: 'DriverOrderDetails', orderId: finalOrder.id },
     }).catch(() => {});
 
-    return updated;
+    return finalOrder;
   },
 
   /** طلبات التوصيل المتاحة. Pagination: limit (default 10), afterId. */
   async availableDelivery(user, opts = {}) {
     const canDrive = (user.role === 'driver' || user.role === 'washer_admin' || user.role === 'worker') && user.washerId;
-    if (!canDrive) throw new ApiError(403, 'Forbidden');
+    if (!canDrive) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const limitRaw = Number(opts.limit ?? DEFAULT_LIMIT);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), MAX_LIMIT) : DEFAULT_LIMIT;
@@ -236,7 +258,7 @@ const DriversService = {
           status: 'open',
           order: {
             washerId: user.washerId,
-            driverId: null,
+            driverStaffMembershipId: null,
             status: { in: deliveryStatuses }
           }
         },
@@ -246,7 +268,7 @@ const DriversService = {
       prisma.order.findMany({
         where: {
           washerId: user.washerId,
-          driverId: null,
+          driverStaffMembershipId: null,
           status: { in: deliveryStatuses }
         },
         include: { customer: true, items: true },
@@ -275,7 +297,7 @@ const DriversService = {
   /** Atomic claim of a delivery task. */
   async claimDeliveryTask(user, taskId) {
     const canDrive = (user.role === 'driver' || user.role === 'washer_admin' || user.role === 'worker') && user.washerId;
-    if (!canDrive) throw new ApiError(403, 'Forbidden');
+    if (!canDrive) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const task = await prisma.driverTask.findUnique({
       where: { id: taskId },
@@ -284,37 +306,58 @@ const DriversService = {
     if (!task) throw new ApiError(404, 'Task not found');
     if (task.taskType !== 'delivery') throw new ApiError(400, 'Not a delivery task');
     if (task.status !== 'open') throw new ApiError(400, 'Task already claimed');
-    if (task.order.washerId !== user.washerId) throw new ApiError(403, 'Forbidden');
+    if (task.order.washerId !== user.washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const updated = await prisma.$transaction(async (tx) => {
       await tx.driverTask.update({
         where: { id: taskId },
-        data: { status: 'assigned', assignedDriverId: user.userId, acceptedAt: new Date() }
+        data: { status: 'assigned', assignedDriverId: user.staffMembershipId || user.userId, acceptedAt: new Date() }
       });
       await tx.order.update({
         where: { id: task.orderId },
-        data: { driverId: user.userId, status: 'delivery_assigned' }
+        data: { driverStaffMembershipId: user.staffMembershipId || user.userId, status: 'delivery_assigned' }
       });
-      return OrderModel.findById(task.orderId);
+
+      await RealtimeOutboxService.safeCreateEvent(tx, {
+        eventKey: `driver-task-updated-${taskId}-${Date.now()}`,
+        eventType: 'driver_task.updated',
+        eventKind: 'client_event',
+        aggregateType: 'DriverTask',
+        aggregateId: taskId,
+        status: 'pending'
+      });
+
+      await RealtimeOutboxService.safeCreateEvent(tx, {
+        eventKey: `order-status-updated-${task.orderId}-delivery_assigned-${Date.now()}`,
+        eventType: 'order.status_updated',
+        eventKind: 'client_event',
+        aggregateType: 'Order',
+        aggregateId: task.orderId,
+        status: 'pending'
+      });
+
+      return task.orderId;
     });
+
+    const finalOrder = await OrderModel.findById(updated);
 
     await NotificationsService.createAndSendNotification({
       userId: user.userId,
-      orderId: updated.id,
+      orderId: finalOrder.id,
       role: 'driver',
       title: 'تم إسناد مهمة توصيل',
-      body: `استلمت مهمة توصيل الطلب #${String(updated.publicNumber).padStart(4, '0')}`,
+      body: `استلمت مهمة توصيل الطلب #${String(finalOrder.publicNumber).padStart(4, '0')}`,
       type: 'delivery_assigned',
-      payload: { targetScreen: 'DriverOrderDetails', orderId: updated.id },
+      payload: { targetScreen: 'DriverOrderDetails', orderId: finalOrder.id },
     }).catch(() => {});
 
-    return updated;
+    return finalOrder;
   },
 
   /** استلام مهمة توصيل بالطلب (للاستخدام من الواجهة بدون معرف المهمة). */
   async claimDeliveryByOrderId(user, orderId) {
     const canDrive = (user.role === 'driver' || user.role === 'washer_admin' || user.role === 'worker') && user.washerId;
-    if (!canDrive) throw new ApiError(403, 'Forbidden');
+    if (!canDrive) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const openTask = await prisma.driverTask.findFirst({
       where: { orderId, taskType: 'delivery', status: 'open' },
@@ -323,7 +366,7 @@ const DriversService = {
     if (!openTask) {
       const order = await prisma.order.findFirst({ where: { id: orderId, washerId: user.washerId } });
       if (!order) throw new ApiError(404, 'Order not found');
-      if (order.driverId) throw new ApiError(400, 'Task already claimed');
+      if (order.driverStaffMembershipId) throw new ApiError(400, 'Task already claimed');
       if (!['washing', 'ready', 'ready_for_delivery'].includes(order.status)) {
         throw new ApiError(400, 'Order not ready for delivery');
       }
@@ -331,10 +374,22 @@ const DriversService = {
       // عند الإسناد الأولي: نربط الطلب بالسائق فقط، بدون تغيير الحالة إذا كانت ما زالت "جاري الغسيل"
       const newStatus = order.status === 'washing' ? 'washing' : order.status;
 
-      await prisma.order.update({
-        where: { id: orderId },
-        data: { driverId: user.userId, status: newStatus }
+      await prisma.$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id: orderId },
+          data: { driverStaffMembershipId: user.staffMembershipId || user.userId, status: newStatus }
+        });
+
+        await RealtimeOutboxService.safeCreateEvent(tx, {
+          eventKey: `order-status-updated-${orderId}-${newStatus}-${Date.now()}`,
+          eventType: 'order.status_updated',
+          eventKind: 'client_event',
+          aggregateType: 'Order',
+          aggregateId: orderId,
+          status: 'pending'
+        });
       });
+
       await NotificationsService.createAndSendNotification({
         userId: user.userId,
         orderId,

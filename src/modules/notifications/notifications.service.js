@@ -22,7 +22,7 @@ const NotificationsService = {
 
     const notification = await prisma.notification.create({
       data: {
-        userId,
+        identityId: userId,
         senderId: input?.senderId ? toStr(input.senderId) : null,
         title,
         body,
@@ -37,9 +37,12 @@ const NotificationsService = {
     });
 
     try {
-      const user = await prisma.user.findUnique({ where: { id: userId }, select: { fcmToken: true } });
-      const token = String(user?.fcmToken ?? '').trim();
-      if (token) {
+      const activeDevices = await prisma.userDevice.findMany({
+        where: { identityId: userId, fcmToken: { not: null } },
+        select: { fcmToken: true }
+      });
+      const tokens = activeDevices.map(d => String(d.fcmToken).trim()).filter(Boolean);
+      if (tokens.length > 0) {
         const pushData = {
           type,
           targetScreen: toStr(payload?.targetScreen || ''),
@@ -49,9 +52,12 @@ const NotificationsService = {
           notificationId: notification.id,
           payload: JSON.stringify(payload ?? {}),
         };
-        const res = await sendPushToTokens([token], { title, body, data: pushData });
-        if (Array.isArray(res?.invalidTokens) && res.invalidTokens.includes(token)) {
-          await prisma.user.update({ where: { id: userId }, data: { fcmToken: null, tokenUpdatedAt: new Date() } });
+        const res = await sendPushToTokens(tokens, { title, body, data: pushData });
+        if (Array.isArray(res?.invalidTokens) && res.invalidTokens.length > 0) {
+          await prisma.userDevice.updateMany({
+            where: { fcmToken: { in: res.invalidTokens } },
+            data: { fcmToken: null, tokenUpdatedAt: new Date() }
+          });
         }
       }
     } catch (_) {
@@ -67,7 +73,7 @@ const NotificationsService = {
     const unreadOnly = Boolean(opts.unreadOnly);
 
     const where = {
-      userId: toStr(userId),
+      identityId: toStr(userId),
       ...(unreadOnly ? { isRead: false } : {}),
     };
 
@@ -87,26 +93,26 @@ const NotificationsService = {
   },
 
   async unreadCount(userId) {
-    return prisma.notification.count({ where: { userId: toStr(userId), isRead: false } });
+    return prisma.notification.count({ where: { identityId: toStr(userId), isRead: false } });
   },
 
   async markRead(userId, id) {
     return prisma.notification.updateMany({
-      where: { id: toStr(id), userId: toStr(userId) },
+      where: { id: toStr(id), identityId: toStr(userId) },
       data: { isRead: true },
     });
   },
 
   async markAllRead(userId) {
     return prisma.notification.updateMany({
-      where: { userId: toStr(userId), isRead: false },
+      where: { identityId: toStr(userId), isRead: false },
       data: { isRead: true },
     });
   },
 
   async markClicked(userId, id) {
     return prisma.notification.updateMany({
-      where: { id: toStr(id), userId: toStr(userId) },
+      where: { id: toStr(id), identityId: toStr(userId) },
       data: { isClicked: true },
     });
   },

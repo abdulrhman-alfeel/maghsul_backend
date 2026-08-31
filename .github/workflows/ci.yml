@@ -1,0 +1,67 @@
+name: Continuous Integration Quality Gate
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  backend-test:
+    name: Backend Test Suite & Prisma Validation
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: laundry_db_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Prisma Validate & Generate
+        run: |
+          npx prisma validate
+          npx prisma generate
+
+      - name: Run Backend Integration & Unit Tests
+        env:
+          NODE_ENV: test
+          DATABASE_URL_TEST: postgresql://postgres:postgrespassword@localhost:5433/laundry_db_test?schema=public
+          DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5433/laundry_db_test?schema=public
+          REDIS_URL: redis://localhost:6380
+          JWT_SECRET: test-jwt-secret-ci-gate-32bytes-minimum
+          MOYASAR_SECRET_KEY: sk_test_ci_mock_secret_key
+          MOYASAR_WEBHOOK_SECRET: test_webhook_secret_ci
+        run: |
+          npx prisma migrate deploy
+          NODE_OPTIONS="--experimental-vm-modules" npx jest src/tests --passWithNoTests --runInBand --detectOpenHandles --no-watchman

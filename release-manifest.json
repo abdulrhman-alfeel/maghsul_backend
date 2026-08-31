@@ -1,0 +1,71 @@
+{
+  "release": "v1.2.0",
+  "timestamp": "2026-08-19T01:40:00Z",
+  "backend": {
+    "gitSha": "7a91f094775c880579950fc755afd7bc3ebbcb1a",
+    "status": "DEPLOYED_AND_VERIFIED",
+    "testSuite": {
+      "suites": 59,
+      "tests": 558,
+      "passed": 558,
+      "failed": 0
+    }
+  },
+  "customerApps": {
+    "fajr": {
+      "brandKey": "fajr",
+      "displayName": "مغسلة الفجر",
+      "androidApplicationId": "com.sa.maghsoul.fajr",
+      "iosBundleId": "com.sa.maghsoul.fajr",
+      "backendApplicationId": "com.fajr.customer",
+      "targetSdk": 36,
+      "compileSdk": 36,
+      "iosSdk": "26.2",
+      "xcodeVersion": "26.2",
+      "androidArtifact": "Laundries-native/dist/customer-fajr-release.aab",
+      "iosArchive": "Laundries-native/ios/build/Fajr.xcarchive"
+    },
+    "lamaa": {
+      "brandKey": "lamaa",
+      "displayName": "مغسلة اللمعة",
+      "androidApplicationId": "com.lamaa.customer",
+      "iosBundleId": "com.lamaa.customer",
+      "backendApplicationId": "com.lamaa.customer",
+      "targetSdk": 36,
+      "compileSdk": 36,
+      "iosSdk": "26.2",
+      "xcodeVersion": "26.2",
+      "androidArtifact": "Laundries-native/dist/customer-lamaa-release.aab",
+      "iosArchive": "Laundries-native/ios/build/Lamaa.xcarchive"
+    },
+    "alwafa": {
+      "brandKey": "alwafa",
+      "displayName": "مغسلة الوفاء",
+      "androidApplicationId": "com.alwafa.customer",
+      "iosBundleId": "com.alwafa.customer",
+      "backendApplicationId": "com.alwafa.customer",
+      "targetSdk": 36,
+      "compileSdk": 36,
+      "iosSdk": "26.2",
+      "xcodeVersion": "26.2",
+      "androidArtifact": "Laundries-native/dist/customer-alwafa-release.aab",
+      "iosArchive": "Laundries-native/ios/build/Alwafa.xcarchive"
+    }
+  },
+  "washerApp": {
+    "displayName": "تطبيق المغسلة - Laundries Washer",
+    "androidApplicationId": "com.laundries.washer",
+    "targetSdk": 36,
+    "compileSdk": 36,
+    "iosSdk": "26.2",
+    "xcodeVersion": "26.2",
+    "androidArtifact": "Laundries-washer/android/app/build/outputs/bundle/release/app-release.aab",
+    "iosArchive": "Laundries-washer/ios/build/Washer.xcarchive",
+    "testSuite": {
+      "suites": 10,
+      "tests": 63,
+      "passed": 63,
+      "failed": 0
+    }
+  }
+}

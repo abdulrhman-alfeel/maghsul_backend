@@ -1,0 +1,20 @@
+export const PERMISSIONS = {
+  // Staff Invitations
+  STAFF_INVITE: 'staff.invite',
+  STAFF_INVITATION_CREATE: 'staff.invitation.create',
+  STAFF_INVITATION_READ: 'staff.invitation.read',
+  STAFF_INVITATION_VIEW: 'staff.invitation.view',
+  STAFF_INVITATION_RESEND: 'staff.invitation.resend',
+  STAFF_INVITATION_REVOKE: 'staff.invitation.revoke'
+};
+
+export const PERMISSION_SCOPES = {
+  STAFF: [
+    PERMISSIONS.STAFF_INVITE,
+    PERMISSIONS.STAFF_INVITATION_CREATE,
+    PERMISSIONS.STAFF_INVITATION_READ,
+    PERMISSIONS.STAFF_INVITATION_VIEW,
+    PERMISSIONS.STAFF_INVITATION_RESEND,
+    PERMISSIONS.STAFF_INVITATION_REVOKE
+  ]
+};

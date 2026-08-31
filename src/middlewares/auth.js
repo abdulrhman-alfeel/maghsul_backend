@@ -16,9 +16,8 @@ export default async function auth(req, res, next) {
     if (!token) {
       return res.status(401).json({ ok: false, error: 'Missing token' });
     }
-
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
+    req.authContext = decoded;
 
     const userId = decoded.userId || decoded.id;
     if (userId) {
@@ -52,7 +51,7 @@ export default async function auth(req, res, next) {
         }
       }
 
-      req.user = { ...decoded, ...dbUser, userId: dbUser.id };
+      req.authContext = { ...decoded, ...dbUser, userId: dbUser.id };
     }
 
     next();
@@ -60,6 +59,8 @@ export default async function auth(req, res, next) {
     if (err?.name === 'TokenExpiredError') {
       return res.status(401).json({ ok: false, error: 'Token expired. Please login again.' });
     }
+    console.log('JWT Verify Error:', err.message);
+
     return res.status(401).json({ ok: false, error: 'Invalid token' });
   }
 }

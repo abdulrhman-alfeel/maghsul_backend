@@ -39,8 +39,17 @@ export const productSchemas = {
 
 export const orderSchemas = {
   createBody: (data) => {
-    if (!data?.washerId || !data?.pickup || !data?.delivery) {
-      return result('washerId, pickup and delivery are required');
+    if (!data?.pickup || !data?.delivery) {
+      return result('pickup and delivery are required');
+    }
+    const forbiddenFields = [
+      'washerId', 'applicationId', 'appType', 'originApplicationId', 'originCustomerApplicationId',
+      'customerApplicationId', 'identityId', 'customerId', 'customerMembershipId', 'sessionId'
+    ];
+    for (const field of forbiddenFields) {
+      if (field in data) {
+        return result(`Field ${field} is not allowed`);
+      }
     }
     const pickup = data.pickup;
     const delivery = data.delivery;
@@ -77,6 +86,7 @@ export const orderSchemas = {
 export const washerSchemas = {
   /** إنشاء مغسلة + مستخدم أدمن جديد في طلب واحد */
   createBody: (data) => {
+    console.log('hellow');
     if (!data?.adminPhone) return result('adminPhone is required');
     if (!data?.name) return result('name is required (washer name)');
     return result(null, data);

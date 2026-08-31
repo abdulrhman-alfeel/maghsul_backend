@@ -7,32 +7,101 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum UserRole {
-  customer
-  washer_admin
-  worker
-  driver
+// =======================
+// Enums
+// =======================
+enum IdentityStatus {
+  active
+  suspended
+  pending_deletion
+  deleted
 }
 
-enum UserStatus {
+enum MembershipStatus {
   active
+  suspended
   blocked
   pending_deletion
   deleted
 }
 
-enum OrderStatus {
-  // Legacy (kept for backward compatibility)
+enum StaffRole {
+  washer_owner
+  washer_manager
+  branch_manager
+  worker
+  driver
+}
+
+enum InvitationStatus {
   pending
   accepted
-  picked_up
-  sorting
-  washing
-  ready
-  delivering
+  expired
+  revoked
+  superseded
+}
+
+enum SessionPurpose {
+  login
+  customer_enrollment
+  staff_context_selection
+  staff_invitation_accept
+}
+
+enum PlatformRole {
+  super_admin
+  support
+  finance
+  operations
+}
+
+enum PermissionScope {
+  branch
+  washer
+  platform
+}
+
+enum NotificationOutboxStatus {
+  pending
+  queued
+  processing
   completed
-  cancelled
-  // Normalized lifecycle (open task claiming + laundry flow)
+  partial
+  failed
+  skipped
+}
+
+enum NotificationDeliveryStatus {
+  pending
+  sent
+  failed
+  skipped
+}
+
+enum NotificationErrorClass {
+  transient
+  permanent
+  invalid_device
+}
+
+enum PermissionEffect {
+  allow
+  deny
+}
+
+enum TokenStatus {
+  active
+  expired
+  invalid
+}
+
+enum SessionType {
+  provisional
+  operational
+  customer
+}
+
+enum OrderStatus {
   pending_pickup
   pickup_assigned
   driver_heading_to_pickup
@@ -52,18 +121,6 @@ enum OrderStatus {
   driver_heading_to_delivery
   driver_arrived_delivery
   delivered
-}
-
-enum DriverTaskType {
-  pickup
-  delivery
-}
-
-enum DriverTaskStatus {
-  open
-  assigned
-  in_progress
-  completed
   cancelled
 }
 
@@ -80,244 +137,637 @@ enum PaymentStatus {
   refunded
 }
 
-model User {
-  id             String     @id @default(cuid())
-  phone          String
-  name           String?
-  role           UserRole
-  status         UserStatus @default(active)
-  washerId       String?
-  avatarUrl      String?
-  fcmToken       String?
-  deviceType     String?
-  tokenUpdatedAt DateTime?
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+enum BranchStatus {
+  active
+  temporarily_closed
+  permanently_closed
+  archived
+}
 
-  // ——— Account Deletion Fields ———
+enum RealtimeOutboxStatus {
+  pending
+  processing
+  emitted
+  failed
+  skipped
+}
+
+enum RealtimeEventKind {
+  client_event
+  internal_command
+}
+
+enum ZoneType {
+  inclusion
+  exclusion
+}
+
+enum CoverageShapeType {
+  circle
+  polygon
+  multi_polygon
+}
+
+enum OtpPurpose {
+  login
+  delete_account
+  phone_change
+}
+
+enum DriverTaskType {
+  pickup
+  delivery
+}
+
+enum DriverTaskStatus {
+  open
+  assigned
+  in_progress
+  completed
+  cancelled
+}
+
+// =======================
+// Identity & Memberships
+// =======================
+
+model Identity {
+  id                  String         @id @default(cuid())
+  phone               String         @unique
+  name                String?
+  avatarUrl           String?
+  status              IdentityStatus @default(active)
   deletionRequestedAt DateTime?
   scheduledDeletionAt DateTime?
   deletedAt           DateTime?
-  deletionReason      String?
   anonymizedAt        DateTime?
+  deletionReason      String?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
 
-  washer         Washer?    @relation(fields: [washerId], references: [id])
-
-  customerOrders Order[]    @relation("CustomerOrders")
-  driverOrders   Order[]    @relation("DriverOrders")
-  assignedTasks  DriverTask[]
-  notifications  Notification[] @relation("UserNotifications")
-  sentNotifications Notification[] @relation("SenderNotifications")
-
-  @@unique([phone, washerId])
-}
-
-model OtpCode {
-  id         String   @id @default(cuid())
-  phone      String
-  codeHash   String
-  expiresAt  DateTime
-  attempts   Int      @default(0)
-  verified   Boolean  @default(false)
-  createdAt  DateTime @default(now())
+  addresses              IdentityAddress[]
+  customerMemberships    CustomerMembership[]
+  staffMemberships       StaffMembership[]
+  platformAccess         PlatformAccess?
+  devices                UserDevice[]
+  sessions               Session[]
+  sentInvitations        StaffInvitation[]      @relation("InviterRelation")
+  auditLogs              AuditLog[]             @relation("SubjectLogs")
+  notifications          Notification[]         @relation("IdentityNotifications")
+  sentNotifications      Notification[]         @relation("SenderNotifications")
+  notificationDeliveries NotificationDelivery[]
 
   @@index([phone])
+  @@index([status])
 }
 
-model Washer {
+model IdentityAddress {
+  id              String   @id @default(cuid())
+  identityId      String
+  label           String?
+  lat             Float
+  lng             Float
+  addressText     String?
+  city            String?
+  district        String?
+  street          String?
+  buildingNumber  String?
+  apartmentNumber String?
+  floor           String?
+  landmark        String?
+  isDeleted       Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  identity        Identity                    @relation(fields: [identityId], references: [id])
+  membershipLinks CustomerMembershipAddress[]
+
+  @@index([identityId, isDeleted])
+}
+
+model CustomerMembershipAddress {
+  id                   String   @id @default(cuid())
+  customerMembershipId String
+  identityAddressId    String
+  isDefault            Boolean  @default(false)
+  pickupInstructions   String?
+  deliveryInstructions String?
+  additionalNotes      String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  customerMembership CustomerMembership @relation(fields: [customerMembershipId], references: [id])
+  identityAddress    IdentityAddress    @relation(fields: [identityAddressId], references: [id])
+
+  @@unique([customerMembershipId, identityAddressId])
+  @@index([customerMembershipId])
+}
+
+model CustomerMembership {
+  id                String           @id @default(cuid())
+  identityId        String
+  washerId          String
+  displayName       String?
+  status            MembershipStatus @default(active)
+  loyaltyPoints     Int              @default(0)
+  walletBalance     Int              @default(0)
+  preferredBranchId String?
+  joinedAt          DateTime         @default(now())
+  lastActiveAt      DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  identity  Identity                    @relation(fields: [identityId], references: [id])
+  washer    Washer                      @relation(fields: [washerId], references: [id])
+  addresses CustomerMembershipAddress[]
+  orders    Order[]
+
+  @@unique([identityId, washerId])
+  @@index([identityId])
+  @@index([washerId])
+  @@index([status])
+}
+
+model StaffMembership {
+  id                  String           @id @default(cuid())
+  identityId          String
+  washerId            String
+  role                StaffRole
+  status              MembershipStatus @default(active)
+  hasFullWasherAccess Boolean          @default(false)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  identity                Identity          @relation(fields: [identityId], references: [id])
+  washer                  Washer            @relation(fields: [washerId], references: [id])
+  branchAccesses          BranchAccess[]
+  driverTasks             DriverTask[]
+  invitedStaffInvitations StaffInvitation[]
+
+  @@unique([identityId, washerId])
+  @@index([identityId])
+  @@index([washerId, status])
+}
+
+model StaffInvitation {
+  id                         String           @id @default(cuid())
+  washerId                   String
+  phone                      String
+  proposedRole               StaffRole
+  proposedBranchIds          Json?
+  invitedByIdentityId        String
+  invitedByStaffMembershipId String
+  tokenHash                  String           @unique
+  expiresAt                  DateTime
+  status                     InvitationStatus @default(pending)
+  acceptedAt                 DateTime?
+  revokedAt                  DateTime?
+  revokedReason              String?
+  lastSentAt                 DateTime         @default(now())
+  sendCount                  Int              @default(1)
+  resendCount                Int              @default(0)
+  createdAt                  DateTime         @default(now())
+
+  washer         Washer          @relation(fields: [washerId], references: [id])
+  invitedBy      Identity        @relation("InviterRelation", fields: [invitedByIdentityId], references: [id])
+  invitedByStaff StaffMembership @relation(fields: [invitedByStaffMembershipId], references: [id])
+
+  @@index([phone])
+  @@index([washerId, status])
+  @@index([tokenHash])
+  @@index([invitedByStaffMembershipId])
+}
+
+model PlatformAccess {
+  id          String           @id @default(cuid())
+  identityId  String           @unique
+  role        PlatformRole
+  status      MembershipStatus @default(active)
+  grantedById String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  identity Identity @relation(fields: [identityId], references: [id])
+
+  @@index([status])
+}
+
+// =======================
+// Permissions
+// =======================
+
+model Permission {
   id          String          @id @default(cuid())
+  code        String          @unique
   name        String
-  phone       String?
-  email       String?
-  address     String?
-  logoUrl     String?
-  status      String          @default("active")
-  isOpen      Boolean         @default(true)
-  deliveryEnabled Boolean     @default(true)
-  minimumOrderAmount Int      @default(0)
-  deliveryFee Int             @default(0)
-  notes       String?
-  serviceLat  Float?
-  serviceLng  Float?
-  serviceRadiusMeters Int?    @default(1500)
-  /// آخر رقم طلب صُدر لهذه المغسلة (يتزايد عند كل طلب جديد)
-  nextOrderSequence Int       @default(0)
+  description String?
+  scope       PermissionScope
+  isActive    Boolean         @default(true)
   createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
 
-  users            User[]
-  zones            Zone[]
-  products         WasherProduct[]
-  orders           Order[]
-  schedules        WasherSchedule[]
-  paymentMethods   WasherPaymentMethod[]
+  roleDefaults    RolePermission[]
+  branchOverrides BranchPermissionOverride[]
+
+  @@index([code])
+  @@index([scope])
 }
 
-model Zone {
-  id        String   @id @default(cuid())
-  washerId  String
-  name      String
-  city      String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
+model RolePermission {
+  id           String    @id @default(cuid())
+  role         StaffRole
+  permissionId String
+  createdAt    DateTime  @default(now())
 
-  washer    Washer   @relation(fields: [washerId], references: [id])
+  permission Permission @relation(fields: [permissionId], references: [id])
 
+  @@unique([role, permissionId])
+  @@index([role])
+}
+
+model BranchPermissionOverride {
+  id             String           @id @default(cuid())
+  branchAccessId String
+  permissionId   String
+  effect         PermissionEffect
+  grantedAt      DateTime         @default(now())
+  grantedById    String?
+
+  branchAccess BranchAccess @relation(fields: [branchAccessId], references: [id])
+  permission   Permission   @relation(fields: [permissionId], references: [id])
+
+  @@unique([branchAccessId, permissionId])
+  @@index([branchAccessId])
+}
+
+model BranchAccess {
+  id                String   @id @default(cuid())
+  staffMembershipId String
+  branchId          String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  staffMembership StaffMembership            @relation(fields: [staffMembershipId], references: [id])
+  branch          Branch                     @relation(fields: [branchId], references: [id])
+  overrides       BranchPermissionOverride[]
+
+  @@unique([staffMembershipId, branchId])
+  @@index([staffMembershipId])
+  @@index([branchId])
+}
+
+// =======================
+// Devices & Sessions
+// =======================
+
+model UserDevice {
+  id             String      @id @default(cuid())
+  identityId     String
+  applicationId  String
+  installationId String
+  platform       String
+  appType        String
+  appVersion     String?
+  model          String?
+  osVersion      String?
+  fcmToken       String?
+  tokenStatus    TokenStatus @default(active)
+  tokenUpdatedAt DateTime?
+  lastSeenAt     DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  identity Identity  @relation(fields: [identityId], references: [id])
+  sessions Session[]
+
+  @@unique([installationId, applicationId])
+  @@index([identityId])
+  @@index([fcmToken])
+  @@index([tokenStatus])
+}
+
+model AppClient {
+  id          String   @id @default(cuid())
+  washerId    String
+  appKey      String   @unique
+  appName     String?
+  platform    String?
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  washer Washer @relation(fields: [washerId], references: [id])
+
+  @@index([appKey])
   @@index([washerId])
 }
 
-model Product {
-  id             String          @id @default(cuid())
-  name           String
-  defaultImage   String?
-  type           String?
-  isDefault      Boolean         @default(true)
-  createdAt      DateTime        @default(now())
+model Session {
+  id                   String          @id @default(cuid())
+  identityId           String
+  userDeviceId         String?
+  sessionType          SessionType
+  purpose              SessionPurpose?
+  washerId             String?
+  branchId             String?
+  staffMembershipId    String?
+  customerMembershipId String?
+  isRevoked            Boolean         @default(false)
+  revokedAt            DateTime?
+  revokedReason        String?
+  replacedBySessionId  String?         @unique
+  expiresAt            DateTime
+  createdAt            DateTime        @default(now())
 
-  washerProducts WasherProduct[]
+  identity      Identity       @relation(fields: [identityId], references: [id])
+  device        UserDevice?    @relation(fields: [userDeviceId], references: [id])
+  refreshTokens RefreshToken[]
+
+  replacedBySession Session? @relation("SessionReplacement", fields: [replacedBySessionId], references: [id], onDelete: SetNull)
+  replacesSession   Session? @relation("SessionReplacement")
+
+  @@index([identityId])
+  @@index([isRevoked, expiresAt])
 }
 
-model WasherProduct {
-  id          String   @id @default(cuid())
-  washerId    String
-  productId   String?
+model RefreshToken {
+  id            String    @id @default(cuid())
+  sessionId     String
+  tokenHash     String    @unique
+  familyId      String
+  parentTokenId String?
+  replacedById  String?
+  isRevoked     Boolean   @default(false)
+  revokedAt     DateTime?
+  revokedReason String?
+  usedAt        DateTime?
+  expiresAt     DateTime
+  createdAt     DateTime  @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@index([tokenHash])
+  @@index([familyId])
+  @@index([isRevoked, expiresAt])
+}
+
+// =======================
+// Washer & Branches
+// =======================
+
+model Washer {
+  id                  String   @id @default(cuid())
+  name                String
+  phone               String?
+  email               String?
+  address             String?
+  logoUrl             String?
+  status              String   @default("active")
+  isOpen              Boolean  @default(true)
+  deliveryEnabled     Boolean  @default(true)
+  minimumOrderAmount  Int      @default(0)
+  deliveryFee         Int      @default(0)
+  notes               String?
+  serviceLat          Float?
+  serviceLng          Float?
+  serviceRadiusMeters Int?     @default(1500)
+  nextOrderSequence   Int      @default(0)
+  permissionsVersion  Int      @default(1)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  customerMemberships CustomerMembership[]
+  staffMemberships    StaffMembership[]
+  invitations         StaffInvitation[]
+  appClients          AppClient[]
+  branches            Branch[]
+  orders              Order[]
+}
+
+model Branch {
+  id                 String       @id @default(cuid())
+  washerId           String
+  name               String
+  description        String?
+  address            String?
+  lat                Float?
+  lng                Float?
+  status             BranchStatus @default(active)
+  isOpen             Boolean      @default(true)
+  acceptingOrders    Boolean      @default(true)
+  minimumOrderAmount Int          @default(0)
+  deliveryFee        Int          @default(0)
+  contactPhone       String?
+  contactEmail       String?
+  sortOrder          Int          @default(0)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  archivedAt         DateTime?
+
+  washer           Washer                @relation(fields: [washerId], references: [id])
+  coverageZones    CoverageZone[]
+  schedules        BranchSchedule[]
+  branchAccesses   BranchAccess[]
+  productOverrides ProductOverride[]
+  paymentMethods   BranchPaymentMethod[]
+  orders           Order[]
+
+  @@index([washerId, status])
+}
+
+model CoverageZone {
+  id           String            @id @default(cuid())
+  branchId     String
+  name         String?
+  zoneType     ZoneType          @default(inclusion)
+  coverageType CoverageShapeType @default(circle)
+  bbMinLat     Float?
+  bbMaxLat     Float?
+  bbMinLng     Float?
+  bbMaxLng     Float?
+  centerLat    Float?
+  centerLng    Float?
+  radiusMeters Int?
+  geoJson      Json?
+  isActive     Boolean           @default(true)
+  priority     Int               @default(0)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@index([branchId, isActive, zoneType])
+}
+
+model BranchSchedule {
+  id       String  @id @default(cuid())
+  branchId String
+  day      Int
+  fromTime String
+  toTime   String
+  enabled  Boolean @default(true)
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@index([branchId, day])
+}
+
+model BranchPaymentMethod {
+  id        String   @id @default(cuid())
+  branchId  String
+  method    String
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@unique([branchId, method])
+  @@index([branchId])
+}
+
+// =======================
+// Products
+// =======================
+
+model Product {
+  id           String   @id @default(cuid())
+  name         String
+  defaultImage String?
+  type         String?
+  isDefault    Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  overrides ProductOverride[]
+}
+
+model ProductOverride {
+  id          String  @id @default(cuid())
+  branchId    String
+  productId   String
   price       Int
   customName  String?
   customImage String?
+  isActive    Boolean @default(true)
 
-  washer      Washer   @relation(fields: [washerId], references: [id])
-  product     Product? @relation(fields: [productId], references: [id])
+  branch  Branch  @relation(fields: [branchId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
 
-  @@index([washerId])
-  @@index([productId])
+  @@unique([branchId, productId])
+  @@index([branchId])
 }
+
+// =======================
+// Orders
+// =======================
 
 model Order {
-  id              String        @id @default(cuid())
-  customerId      String
-  washerId        String
-  driverId        String?
-  /// رقم تسلسلي ثابت لكل مغسلة (1، 2، 3… — يُعرض للعميل كأربعة أرقام)
-  publicNumber    Int
+  id                          String  @id @default(cuid())
+  washerId                    String
+  branchId                    String
+  customerMembershipId        String
+  originCustomerApplicationId String? @db.VarChar(64)
+  driverStaffMembershipId     String?
+  publicNumber                Int
 
-  pickupLat       Float
-  pickupLng       Float
-  pickupZoneId    String?
-  pickupAddress   String?
+  pickupLat             Float
+  pickupLng             Float
+  pickupAddressText     String?
+  pickupCity            String?
+  pickupDistrict        String?
+  pickupStreet          String?
+  pickupBuildingNumber  String?
+  pickupApartmentNumber String?
+  pickupFloor           String?
+  pickupLandmark        String?
+  pickupInstructions    String?
 
-  deliveryLat     Float
-  deliveryLng     Float
-  deliveryZoneId  String?
-  deliveryAddress String?
+  deliveryLat             Float
+  deliveryLng             Float
+  deliveryAddressText     String?
+  deliveryCity            String?
+  deliveryDistrict        String?
+  deliveryStreet          String?
+  deliveryBuildingNumber  String?
+  deliveryApartmentNumber String?
+  deliveryFloor           String?
+  deliveryLandmark        String?
+  deliveryInstructions    String?
 
-  status          OrderStatus   @default(pending)
-  paymentMethod   PaymentMethod @default(cash_on_delivery)
-  paymentStatus   PaymentStatus @default(unpaid)
-  totalPrice      Int           @default(0)
+  subtotal        Int   @default(0)
+  deliveryFee     Int   @default(0)
+  discount        Int   @default(0)
+  totalPrice      Int   @default(0)
+  pricingSnapshot Json?
 
-  // نوع الخدمة: باقة أو غسيل بالقطعة
-  serviceType     String        @default("piece")  // "package" | "piece"
-  packageSize     String?                           // "small" | "medium" | "large" عند الباقة
-  // تفاصيل طريقة الغسيل (يختارها العميل)
-  washType        String?                           // غسيل وكوي، غسيل، تنظيف جاف
-  sortMethod      String?                           // تلقائي، طي الكل، تعليق الكل
-  perfume         Boolean       @default(false)     // عطر ملابس
-  organicSoap     Boolean       @default(false)     // صابون عضوي
-  ironType        String?                           // مرزام، بدون مرزام، تعليق الكل (شماغ/غترة)
-  starchLevel     String?                           // بدون، خفيف، متوسط، ثقيل
-  notes           String?
-  couponCode      String?
+  serviceType String  @default("piece")
+  packageSize String?
+  washType    String?
+  sortMethod  String?
+  perfume     Boolean @default(false)
+  organicSoap Boolean @default(false)
+  ironType    String?
+  starchLevel String?
+  notes       String?
 
-  /// جدولة الاستلام والتسليم وطريقة التواصل (من تطبيق العميل)
-  isUrgent                Boolean       @default(false)
-  pickupSlotLabel         String?
-  deliverySlotLabel       String?
-  pickupHandoffMethod     String?
-  deliveryHandoffMethod   String?
+  paymentMethod PaymentMethod @default(cash_on_delivery)
+  paymentStatus PaymentStatus @default(unpaid)
+  couponCode    String?
 
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  isUrgent              Boolean @default(false)
+  pickupSlotLabel       String?
+  deliverySlotLabel     String?
+  pickupHandoffMethod   String?
+  deliveryHandoffMethod String?
 
-  customer        User          @relation("CustomerOrders", fields: [customerId], references: [id])
-  washer          Washer        @relation(fields: [washerId], references: [id])
-  driver          User?         @relation("DriverOrders", fields: [driverId], references: [id])
+  status OrderStatus @default(pending_pickup)
 
-  items           OrderItem[]
-  events          OrderEvent[]
-  payments        Payment[]
-  driverTasks     DriverTask[]
-  invoices        Invoice[]
+  idempotencyKey String
+  contentHash    String
 
-  @@index([customerId])
-  @@index([washerId])
-  @@index([driverId])
-  @@index([status])
-  @@index([driverId, status])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  washer             Washer             @relation(fields: [washerId], references: [id])
+  branch             Branch             @relation(fields: [branchId], references: [id])
+  customerMembership CustomerMembership @relation(fields: [customerMembershipId], references: [id])
+
+  items       OrderItem[]
+  events      OrderEvent[]
+  payments    Payment[]
+  refunds     Refund[]
+  driverTasks DriverTask[]
+  invoices    Invoice[]
+
   @@unique([washerId, publicNumber])
-}
-
-model DriverTask {
-  id                 String           @id @default(cuid())
-  orderId            String
-  taskType           DriverTaskType
-  status             DriverTaskStatus @default(open)
-  assignedDriverId   String?
-  acceptedAt         DateTime?
-  startedAt          DateTime?
-  completedAt        DateTime?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
-
-  order              Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  assignedDriver     User?            @relation(fields: [assignedDriverId], references: [id])
-
-  @@index([orderId])
-  @@index([assignedDriverId])
-  @@index([status])
-  @@index([taskType])
-}
-
-model Invoice {
-  id             String        @id @default(cuid())
-  orderId        String
-  subtotal       Int           @default(0)
-  deliveryFee    Int           @default(0)
-  discount       Int           @default(0)
-  total          Int           @default(0)
-  paymentStatus  PaymentStatus @default(unpaid)
-  generatedAt    DateTime      @default(now())
-  generatedBy    String?
-
-  order          Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
-
-  @@index([orderId])
+  @@unique([customerMembershipId, idempotencyKey])
+  @@index([customerMembershipId])
+  @@index([washerId, branchId, status])
 }
 
 model OrderItem {
-  id              String   @id @default(cuid())
-  orderId         String
-  productId       String?
-  washerProductId String?
-  name            String
-  quantity        Int
-  price           Int
-  createdAt       DateTime @default(now())
+  id        String   @id @default(cuid())
+  orderId   String
+  productId String?
+  name      String
+  quantity  Int
+  price     Int
+  createdAt DateTime @default(now())
 
-  order           Order    @relation(fields: [orderId], references: [id])
+  order Order @relation(fields: [orderId], references: [id])
 
   @@index([orderId])
 }
 
 model OrderEvent {
-  id        String      @id @default(cuid())
+  id        String       @id @default(cuid())
   orderId   String
   from      OrderStatus?
   to        OrderStatus
   byUserId  String?
   note      String?
-  createdAt DateTime    @default(now())
+  createdAt DateTime     @default(now())
 
-  order     Order       @relation(fields: [orderId], references: [id])
+  order Order @relation(fields: [orderId], references: [id])
 
   @@index([orderId])
 }
@@ -336,58 +786,243 @@ model Payment {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  order          Order         @relation(fields: [orderId], references: [id])
+  order   Order    @relation(fields: [orderId], references: [id])
+  refunds Refund[]
 
   @@index([orderId])
   @@index([status])
 }
 
-model WasherPaymentMethod {
-  id        String   @id @default(cuid())
-  washerId  String
-  method    String
-  enabled   Boolean  @default(true)
-  createdAt DateTime @default(now())
+model Invoice {
+  id            String        @id @default(cuid())
+  orderId       String
+  subtotal      Int           @default(0)
+  deliveryFee   Int           @default(0)
+  discount      Int           @default(0)
+  total         Int           @default(0)
+  paymentStatus PaymentStatus @default(unpaid)
+  generatedAt   DateTime      @default(now())
+  generatedBy   String?
 
-  washer    Washer   @relation(fields: [washerId], references: [id])
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
-  @@unique([washerId, method])
-  @@index([washerId])
+  @@index([orderId])
 }
 
-model WasherSchedule {
-  id        String   @id @default(cuid())
-  washerId  String
-  day       Int
-  fromTime  String
-  toTime    String
-  enabled   Boolean  @default(true)
+model DriverTask {
+  id               String           @id @default(cuid())
+  orderId          String
+  taskType         DriverTaskType
+  status           DriverTaskStatus @default(open)
+  assignedDriverId String?
+  acceptedAt       DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 
-  washer    Washer   @relation(fields: [washerId], references: [id])
+  order          Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  assignedDriver StaffMembership? @relation(fields: [assignedDriverId], references: [id])
 
-  @@index([washerId, day])
+  @@index([orderId])
+  @@index([assignedDriverId])
+  @@index([status])
+  @@index([taskType])
+}
+
+// =======================
+// Other
+// =======================
+
+model OtpCode {
+  id          String     @id @default(cuid())
+  phone       String
+  appClientId String?
+  purpose     OtpPurpose @default(login)
+  codeHash    String
+  expiresAt   DateTime
+  attempts    Int        @default(0)
+  maxAttempts Int        @default(5)
+  verified    Boolean    @default(false)
+  createdAt   DateTime   @default(now())
+
+  @@index([phone, purpose, verified])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  entityType String
+  entityId   String
+  action     String
+  subjectId  String?
+  oldValue   Json?
+  newValue   Json?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  subject Identity? @relation("SubjectLogs", fields: [subjectId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([subjectId])
+  @@index([createdAt])
 }
 
 model Notification {
-  id        String   @id @default(cuid())
-  userId    String
-  senderId  String?
-  title     String
-  body      String
-  type      String
-  entityId  String?
-  orderId   String?
-  role      String?
-  payload   Json?
-  isRead    Boolean  @default(false)
-  isClicked Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String   @id @default(cuid())
+  identityId    String
+  senderId      String?
+  title         String
+  body          String
+  type          String
+  entityId      String?
+  orderId       String?
+  role          String?
+  payload       Json?
+  isRead        Boolean  @default(false)
+  isClicked     Boolean  @default(false)
+  sourceEventId String?
+  dedupeKey     String?  @unique
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  user   User  @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
-  sender User? @relation("SenderNotifications", fields: [senderId], references: [id], onDelete: SetNull)
+  identity Identity  @relation("IdentityNotifications", fields: [identityId], references: [id], onDelete: Cascade)
+  sender   Identity? @relation("SenderNotifications", fields: [senderId], references: [id], onDelete: SetNull)
 
-  @@index([userId, isRead, createdAt])
+  @@index([identityId, isRead, createdAt])
   @@index([orderId, createdAt])
   @@index([type, createdAt])
+  @@index([sourceEventId])
+}
+
+model NotificationOutboxEvent {
+  eventId              String                   @id @default(cuid())
+  eventKey             String                   @unique
+  washerId             String
+  eventType            String
+  aggregateType        String
+  aggregateId          String
+  payloadVersion       Int                      @default(1)
+  status               NotificationOutboxStatus @default(pending)
+  reasonCode           String?
+  dispatchAttemptCount Int                      @default(0)
+  nextAttemptAt        DateTime?
+  claimedAt            DateTime?
+  claimedBy            String?
+  claimExpiresAt       DateTime?
+  queuedAt             DateTime?
+  processedAt          DateTime?
+  lastErrorCode        String?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  deliveries NotificationDelivery[]
+
+  @@index([status, nextAttemptAt, claimExpiresAt, createdAt])
+}
+
+model NotificationDelivery {
+  id                  String                     @id @default(cuid())
+  eventId             String
+  recipientIdentityId String
+  deviceId            String
+  status              NotificationDeliveryStatus @default(pending)
+  reasonCode          String?
+  errorClass          NotificationErrorClass?
+  attemptCount        Int                        @default(0)
+  providerMessageId   String?
+  lastErrorCode       String?
+  lastAttemptAt       DateTime?
+  sentAt              DateTime?
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
+
+  event    NotificationOutboxEvent @relation(fields: [eventId], references: [eventId], onDelete: Cascade)
+  identity Identity                @relation(fields: [recipientIdentityId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, deviceId])
+  @@index([eventId, status])
+  @@index([recipientIdentityId, status])
+}
+
+model RealtimeOutboxEvent {
+  eventId        String               @id @default(cuid())
+  eventKey       String               @unique
+  eventType      String
+  eventVersion   Int                  @default(1)
+  eventKind      RealtimeEventKind
+  aggregateType  String
+  aggregateId    String
+  status         RealtimeOutboxStatus @default(pending)
+  reasonCode     String?
+  attemptCount   Int                  @default(0)
+  nextAttemptAt  DateTime?
+  claimedAt      DateTime?
+  claimedBy      String?
+  claimExpiresAt DateTime?
+  emittedAt      DateTime?
+  lastErrorCode  String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@index([status, nextAttemptAt, claimExpiresAt, createdAt])
+  @@index([aggregateType, aggregateId])
+}
+
+// =======================
+// Webhook & Refund Ledger Models
+// =======================
+
+enum WebhookProcessingStatus {
+  pending
+  processed
+  failed
+  ignored
+}
+
+enum RefundStatus {
+  pending
+  completed
+  failed
+}
+
+model WebhookEvent {
+  id                String                  @id @default(cuid())
+  provider          String
+  externalEventId   String
+  eventType         String
+  payloadHash       String
+  paymentExternalId String?
+  processingStatus  WebhookProcessingStatus @default(pending)
+  rawPayload        Json
+  retryCount        Int                     @default(0)
+  lastErrorCode     String?
+  receivedAt        DateTime                @default(now())
+  processedAt       DateTime?
+  failedAt          DateTime?
+
+  @@unique([provider, externalEventId])
+  @@index([processingStatus])
+  @@index([paymentExternalId])
+}
+
+model Refund {
+  id               String       @id @default(cuid())
+  paymentId        String
+  orderId          String
+  externalRefundId String?      @unique
+  amount           Int
+  currency         String       @default("SAR")
+  reason           String?
+  status           RefundStatus @default(pending)
+  requestedBy      String?
+  rawResponse      Json?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+  order   Order   @relation(fields: [orderId], references: [id])
+
+  @@index([paymentId])
+  @@index([orderId])
+  @@index([status])
 }

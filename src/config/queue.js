@@ -5,17 +5,23 @@ import logger from './logger.js';
 
 const connection = ioredis;
 
-export const notificationQueue = new Queue('notifications', {
-  connection,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 5000,
-    },
-    removeOnComplete: true,
-    removeOnFail: 1000,
-  },
-});
+let _notificationQueue = null;
 
-logger.info('BullMQ: Notification queue initialized.');
+export const getNotificationQueue = () => {
+  if (!_notificationQueue) {
+    _notificationQueue = new Queue('notifications', {
+      connection,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 5000,
+        },
+        removeOnComplete: true,
+        removeOnFail: 1000,
+      },
+    });
+    logger.info('BullMQ: Notification queue initialized.');
+  }
+  return _notificationQueue;
+};

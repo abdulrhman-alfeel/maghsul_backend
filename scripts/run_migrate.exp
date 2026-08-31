@@ -1,0 +1,10 @@
+#!/usr/bin/expect -f
+set timeout -1
+spawn env NODE_ENV=development npx prisma migrate dev --name init_v3_1
+expect {
+  "y/N" {
+    send "y\r"
+    exp_continue
+  }
+  eof
+}

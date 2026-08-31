@@ -69,7 +69,9 @@
 | :--- | :--- |
 | `docker-compose logs -f` | متابعة سجلات الأخطاء والرسائل (Logs) من **جميع** الخدمات بشكل مباشر (Real-time). |
 | `docker-compose logs -f app` | متابعة سجلات مهام التطبيق (Node.js) **فقط**. |
-| `docker-compose exec app sh` | الدخول إلى سطر الأوامر (Shell) الخاص بحاوية Node.js (مفيد لتشغيل أوامر Prisma يدوياً). |
+| `docker-compose exec app sh` | الدخول إلى سطر الأوامر (Shell) الخاص بحاوية Node.js (مفيد لتشغيل أوامر 
+| `docker compose logs app --tail=80` | عرض آخر 80 سطر من سجلات التطبيق |
+Prisma يدوياً). |
 | `docker ps` | عرض قائمة بجميع الحاويات الموجودة قيد التشغيل حالياً على جهازك. |
 
 ### 3. أوامر الصيانة والتنظيف العامة

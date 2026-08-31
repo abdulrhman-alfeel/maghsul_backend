@@ -1,0 +1,24 @@
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: laundry_db_test_3
+    ports:
+      - "5433:5432"
+    volumes:
+      - laundry_postgres_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d laundry_db_test_3"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+
+volumes:
+  laundry_postgres_test_data:
