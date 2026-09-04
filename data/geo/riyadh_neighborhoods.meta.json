@@ -1,0 +1,53 @@
+{
+  "dataset": "riyadh_neighborhoods",
+  "semantics": "RIYADH CITY SELECTABLE NEIGHBORHOODS",
+  "description": "Authoritative selectable Riyadh City neighborhood boundaries. Excludes non-Riyadh administrative entities such as Diriyah governorate placeholders without geometry.",
+  "city": "Riyadh",
+  "cityAr": "الرياض",
+  "coordinateSystem": "EPSG:4326",
+  "coordinateOrder": "[longitude, latitude]",
+  "sourceFeatureCount": 166,
+  "selectableFeatureCount": 165,
+  "excludedFeatureCount": 1,
+  "featureCount": 165,
+  "polygonCount": 165,
+  "multiPolygonCount": 0,
+  "bbox": [
+    46.412944,
+    24.376149,
+    47.062335,
+    25.056291
+  ],
+  "generatedAt": "2026-09-04T20:14:29.690Z",
+  "source": {
+    "host": "namaa-gis.kharetatalenmaa.sa",
+    "service": "RiyadhPMS_DistrictsPI",
+    "layer": 5
+  },
+  "excludedSourceRecords": [
+    {
+      "districtCode": "9901",
+      "nameAr": "الخزامي",
+      "municipalityNameAr": "الدرعية",
+      "reason": "OUT_OF_SCOPE_DIRIYAH",
+      "sourceGeometry": null,
+      "selectable": false
+    }
+  ],
+  "sha256": "cefc6cd5b46646759ef41e562c14b725b0f4d4b539a04e505bd16742fd9d6e85",
+  "fileSizeBytes": 4204479,
+  "totalCoordinatePoints": 43398,
+  "validation": {
+    "missingArabicNames": 0,
+    "missingEnglishNames": 0,
+    "missingDistrictCodes": 0,
+    "invalidGeometryCount": 0,
+    "nullGeometryCount": 0,
+    "outOfBoundsCount": 0,
+    "duplicateDistrictCodes": 0,
+    "duplicateArabicNames": 6,
+    "district3802Present": true,
+    "district3802Valid": true,
+    "district9901Excluded": true
+  }
+}
