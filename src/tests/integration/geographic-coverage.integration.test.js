@@ -93,7 +93,7 @@ describe('Phase 1: Geographic Coverage Engine & Routing Policy Integration (Refi
         centerLng: 46.6753,
         radiusMeters: 3000,
         priority: 10,
-        isActive: true
+        isActive: false
       }
     });
 
@@ -166,6 +166,7 @@ describe('Phase 1: Geographic Coverage Engine & Routing Policy Integration (Refi
     await prisma.orderItem.deleteMany();
     await prisma.orderEvent.deleteMany();
     await prisma.driverTask.deleteMany();
+    await prisma.refund.deleteMany();
     await prisma.payment.deleteMany();
     await prisma.invoice.deleteMany();
     await prisma.order.deleteMany();

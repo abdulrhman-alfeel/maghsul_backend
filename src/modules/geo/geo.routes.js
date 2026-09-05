@@ -4,8 +4,11 @@ import GeoController from './geo.controller.js';
 
 const router = Router();
 
-// Public / client-accessible cached geo catalogs
-router.get('/riyadh-neighborhoods', asyncHandler((req, res) => GeoController.getRiyadhNeighborhoods(req, res)));
-router.get('/neighborhoods', asyncHandler((req, res) => GeoController.getNeighborhoodsByCity(req, res)));
+// Canonical generic multi-city route
+router.get('/cities/:cityCode/neighborhoods', asyncHandler(GeoController.getCityNeighborhoods));
+
+// Backward-compatible routes delegating internally to riyadh
+router.get('/riyadh-neighborhoods', asyncHandler(GeoController.getRiyadhNeighborhoods));
+router.get('/neighborhoods', asyncHandler(GeoController.getRiyadhNeighborhoods));
 
 export default router;

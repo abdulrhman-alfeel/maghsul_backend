@@ -28,6 +28,11 @@ function isPointOnSegment(lat, lng, p1, p2) {
   const [x1, y1] = [p1[0], p1[1]]; // lng, lat
   const [x2, y2] = [p2[0], p2[1]]; // lng, lat
 
+  const squaredLength = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
+  if (squaredLength < 1e-12) {
+    return Math.abs(lng - x1) < 1e-9 && Math.abs(lat - y1) < 1e-9;
+  }
+
   // Exact vertex match
   if ((lng === x1 && lat === y1) || (lng === x2 && lat === y2)) return true;
 
@@ -38,8 +43,6 @@ function isPointOnSegment(lat, lng, p1, p2) {
   // Dot product to check bounds
   const dotProduct = (lng - x1) * (x2 - x1) + (lat - y1) * (y2 - y1);
   if (dotProduct < 0) return false;
-
-  const squaredLength = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
   if (dotProduct > squaredLength) return false;
 
   return true;
@@ -50,11 +53,16 @@ function isPointOnSegment(lat, lng, p1, p2) {
  */
 function isPointInSingleRing(lat, lng, ring) {
   if (!Array.isArray(ring) || ring.length < 3) return false;
+  // If ring is closed (first === last), slice duplicate closing point for ray casting
+  const isClosed = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1];
+  const pts = isClosed ? ring.slice(0, -1) : ring;
+  if (pts.length < 3) return false;
+
   let inside = false;
 
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const p1 = ring[i];
-    const p2 = ring[j];
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const p1 = pts[i];
+    const p2 = pts[j];
 
     // Edge and Vertex check: if point is on edge, it is INSIDE
     if (isPointOnSegment(lat, lng, p1, p2)) return true;
@@ -210,6 +218,16 @@ export function evaluateBranchCoverage(branch, zones, pickup, delivery) {
     if (pEx || dEx) {
       return { isCovered: false, matchedZonePriority: -1, pickupDistance: Infinity };
     }
+  }
+
+  // Mixed Inclusion Fail-Closed Policy:
+  // Detect simultaneous active INCLUSION families (circle + polygon/multi_polygon).
+  // If ambiguous conflicting inclusion modes exist, fail closed immediately.
+  const hasActiveCircleInclusion = inclusionZones.some((z) => z.coverageType === 'circle');
+  const hasActivePolygonInclusion = inclusionZones.some((z) => ['polygon', 'multi_polygon'].includes(z.coverageType));
+
+  if (hasActiveCircleInclusion && hasActivePolygonInclusion) {
+    return { isCovered: false, matchedZonePriority: -1, pickupDistance: Infinity, isConflict: true };
   }
 
   let isCovered = false;

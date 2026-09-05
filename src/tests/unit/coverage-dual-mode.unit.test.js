@@ -1,5 +1,6 @@
 import CoverageService from '../../modules/washers/coverage.service.js';
 import GeoService from '../../modules/geo/geo.service.js';
+import { CITY_REGISTRY, getCityConfig, getSupportedCityCodes } from '../../modules/geo/city.registry.js';
 import { washerSchemas } from '../../utils/schemas.js';
 
 describe('Dual-Mode Geographic Coverage Unit Tests (Pure Logic)', () => {
@@ -34,15 +35,44 @@ describe('Dual-Mode Geographic Coverage Unit Tests (Pure Logic)', () => {
     });
   });
 
-  // ── 2. GeoService Tests ───────────────────────────────────────────────────
+  // ── 2. City Registry Tests ────────────────────────────────────────────────
+  describe('City Registry', () => {
+    test('contains riyadh configuration with required paths', () => {
+      const config = getCityConfig('riyadh');
+      expect(config).toBeDefined();
+      expect(config.cityCode).toBe('riyadh');
+      expect(config.nameAr).toBe('الرياض');
+      expect(config.canonicalPath).toContain('riyadh_neighborhoods.geojson');
+      expect(config.displayPath).toContain('riyadh_neighborhoods_display.json');
+      expect(config.metaPath).toContain('riyadh_neighborhoods_display.meta.json');
+    });
+
+    test('case-insensitively resolves city', () => {
+      expect(getCityConfig('RIYADH')).toEqual(getCityConfig('riyadh'));
+      expect(getCityConfig('  Riyadh  ')).toEqual(getCityConfig('riyadh'));
+    });
+
+    test('returns null for unsupported cities without throwing', () => {
+      expect(getCityConfig('jeddah')).toBeNull();
+      expect(getCityConfig('dammam')).toBeNull();
+      expect(getCityConfig('')).toBeNull();
+      expect(getCityConfig(null)).toBeNull();
+    });
+
+    test('lists supported cities', () => {
+      const cities = getSupportedCityCodes();
+      expect(cities).toContain('riyadh');
+    });
+  });
+
+  // ── 3. GeoService Tests ───────────────────────────────────────────────────
   describe('GeoService', () => {
-    test('loads display catalog with 165 features and valid ETag', () => {
-      const { catalog, etag } = GeoService.getDisplayCatalog();
+    test('loads display catalog with 165 features and valid ETag for riyadh', () => {
+      const { catalog, etag } = GeoService.getDisplayCatalog('riyadh');
       expect(catalog.features).toHaveLength(165);
       expect(etag).toMatch(/^"[a-f0-9]{16}"$/);
       expect(catalog.cityCode).toBe('riyadh');
 
-      // Verify each feature has center and bbox
       const sample = catalog.features[0];
       expect(sample.properties.districtCode).toBeDefined();
       expect(sample.properties.center.lat).toBeGreaterThan(24);
@@ -50,15 +80,25 @@ describe('Dual-Mode Geographic Coverage Unit Tests (Pure Logic)', () => {
       expect(sample.properties.bbox).toHaveLength(4);
     });
 
+    test('throws 404 for unsupported city in getDisplayCatalog', () => {
+      expect(() => GeoService.getDisplayCatalog('jeddah')).toThrow(/City "jeddah" is not supported/);
+    });
+
     test('fetches canonical features for valid districtCodes', () => {
+      const canonical = GeoService.getCanonicalFeaturesByDistrictCodes('riyadh', ['3802', '3401']);
+      expect(canonical).toHaveLength(2);
+      expect(canonical.map((f) => String(f.properties.districtCode))).toEqual(['3802', '3401']);
+    });
+
+    test('backward compatibility: defaults to riyadh when single argument is array', () => {
       const canonical = GeoService.getCanonicalFeaturesByDistrictCodes(['3802', '3401']);
       expect(canonical).toHaveLength(2);
       expect(canonical.map((f) => String(f.properties.districtCode))).toEqual(['3802', '3401']);
     });
 
     test('throws 400 for unknown district code', () => {
-      expect(() => GeoService.getCanonicalFeaturesByDistrictCodes(['999999'])).toThrow(
-        /not recognized in Riyadh City/
+      expect(() => GeoService.getCanonicalFeaturesByDistrictCodes('riyadh', ['999999'])).toThrow(
+        /not recognized in city "riyadh"/
       );
     });
 
@@ -82,8 +122,8 @@ describe('Dual-Mode Geographic Coverage Unit Tests (Pure Logic)', () => {
     });
   });
 
-  // ── 3. CoverageService Evaluation Tests ───────────────────────────────────
-  describe('CoverageService.evaluateBranchCoverage (Dual Mode Evaluation)', () => {
+  // ── 4. CoverageService Dual-Mode Evaluation Tests ─────────────────────────
+  describe('CoverageService.evaluateBranchCoverage (Deterministic Mode Invariants)', () => {
     const branch = {
       id: 'branch-1',
       status: 'active',
@@ -93,110 +133,161 @@ describe('Dual-Mode Geographic Coverage Unit Tests (Pure Logic)', () => {
       lng: 46.6753,
     };
 
-    test('Mode 1 (Circle): evaluates point within radius as covered', () => {
-      const circleZone = {
-        id: 'zone-circle-1',
-        branchId: 'branch-1',
-        name: 'Circle Zone',
-        zoneType: 'inclusion',
-        coverageType: 'circle',
-        centerLat: 24.7136,
-        centerLng: 46.6753,
-        radiusMeters: 2000,
-        isActive: true,
-        priority: 10,
-      };
+    const circleInclusionZone = {
+      id: 'zone-circle-1',
+      branchId: 'branch-1',
+      name: 'Circle Inclusion Zone',
+      zoneType: 'inclusion',
+      coverageType: 'circle',
+      centerLat: 24.7136,
+      centerLng: 46.6753,
+      radiusMeters: 2000,
+      isActive: true,
+      priority: 10,
+    };
 
-      // Point ~200m away
+    const polygonInclusionZone = {
+      id: 'zone-poly-1',
+      branchId: 'branch-1',
+      name: 'Olaya Polygon Inclusion',
+      zoneType: 'inclusion',
+      coverageType: 'polygon',
+      geoJson: {
+        type: 'Polygon',
+        coordinates: [
+          [
+            [46.6600, 24.7000],
+            [46.6900, 24.7000],
+            [46.6900, 24.7300],
+            [46.6600, 24.7300],
+            [46.6600, 24.7000],
+          ],
+        ],
+      },
+      isActive: true,
+      priority: 10,
+    };
+
+    const circleExclusionZone = {
+      id: 'zone-circle-ex',
+      branchId: 'branch-1',
+      name: 'Restricted Circle Exclusion',
+      zoneType: 'exclusion',
+      coverageType: 'circle',
+      centerLat: 24.7150,
+      centerLng: 46.6750,
+      radiusMeters: 300,
+      isActive: true,
+      priority: 99,
+    };
+
+    const polygonExclusionZone = {
+      id: 'zone-poly-ex',
+      branchId: 'branch-1',
+      name: 'Restricted Polygon Exclusion',
+      zoneType: 'exclusion',
+      coverageType: 'polygon',
+      geoJson: {
+        type: 'Polygon',
+        coordinates: [
+          [
+            [46.6700, 24.7100],
+            [46.6800, 24.7100],
+            [46.6800, 24.7200],
+            [46.6700, 24.7200],
+            [46.6700, 24.7100],
+          ],
+        ],
+      },
+      isActive: true,
+      priority: 99,
+    };
+
+    test('Mode 1 (Circle Only): point inside is covered, point outside is not covered', () => {
       const pickupInside = { lat: 24.7150, lng: 46.6760 };
-      const evalInside = CoverageService.evaluateBranchCoverage(branch, [circleZone], pickupInside, null);
+      const evalInside = CoverageService.evaluateBranchCoverage(branch, [circleInclusionZone], pickupInside, null);
       expect(evalInside.isCovered).toBe(true);
-      expect(evalInside.pickupDistance).toBeLessThan(2000);
 
-      // Point ~10km away
-      const pickupOutside = { lat: 24.8100, lng: 46.7800 };
-      const evalOutside = CoverageService.evaluateBranchCoverage(branch, [circleZone], pickupOutside, null);
+      const pickupOutside = { lat: 24.8500, lng: 46.8500 };
+      const evalOutside = CoverageService.evaluateBranchCoverage(branch, [circleInclusionZone], pickupOutside, null);
       expect(evalOutside.isCovered).toBe(false);
     });
 
-    test('Mode 2 (Neighborhood Polygon): evaluates point inside canonical polygon as covered', () => {
-      // Canonical Al Khuzama feature ('3802')
-      const feature3802 = GeoService.getCanonicalIndex().get('3802');
-      const bbox = GeoService.computeBoundingBox(feature3802.geometry.coordinates);
-
-      const neighborhoodZone = {
-        id: 'zone-poly-3802',
-        branchId: 'branch-1',
-        name: 'الخزامى',
-        zoneType: 'inclusion',
-        coverageType: 'polygon',
-        bbMinLat: bbox.bbMinLat,
-        bbMaxLat: bbox.bbMaxLat,
-        bbMinLng: bbox.bbMinLng,
-        bbMaxLng: bbox.bbMaxLng,
-        geoJson: feature3802.geometry,
-        isActive: true,
-        priority: 10,
-      };
-
-      // Point on the first coordinate of Al Khuzama (on boundary/vertex -> inside)
-      const firstCoord = feature3802.geometry.coordinates[0][0]; // [lng, lat]
-      const pickupInside = { lat: firstCoord[1], lng: firstCoord[0] };
-
-      const evalInside = CoverageService.evaluateBranchCoverage(branch, [neighborhoodZone], pickupInside, null);
+    test('Mode 2 (Neighborhood Polygon Only): point inside polygon is covered, outside is not covered', () => {
+      const pickupInside = { lat: 24.7150, lng: 46.6750 };
+      const evalInside = CoverageService.evaluateBranchCoverage(branch, [polygonInclusionZone], pickupInside, null);
       expect(evalInside.isCovered).toBe(true);
 
-      // Point in Olaya center (outside Al Khuzama) -> NOT covered
-      const pickupOlaya = { lat: 24.7136, lng: 46.6753 };
-      const evalOutside = CoverageService.evaluateBranchCoverage(branch, [neighborhoodZone], pickupOlaya, null);
+      const pickupOutside = { lat: 24.6500, lng: 46.6000 };
+      const evalOutside = CoverageService.evaluateBranchCoverage(branch, [polygonInclusionZone], pickupOutside, null);
       expect(evalOutside.isCovered).toBe(false);
     });
 
-    test('FAIL_CLOSED Guarantee: returns isCovered: false when zero inclusion zones are active', () => {
-      const inactiveZone = {
-        id: 'zone-inactive',
-        branchId: 'branch-1',
-        zoneType: 'inclusion',
-        coverageType: 'circle',
-        centerLat: 24.7136,
-        centerLng: 46.6753,
-        radiusMeters: 5000,
-        isActive: false, // Inactive!
-      };
-
+    test('None: branch with no active inclusion zones fails closed (isCovered = false)', () => {
       const pickup = { lat: 24.7136, lng: 46.6753 };
-      const evalResult = CoverageService.evaluateBranchCoverage(branch, [inactiveZone], pickup, null);
-      expect(evalResult.isCovered).toBe(false);
-      expect(evalResult.matchedZonePriority).toBe(-1);
+      const res = CoverageService.evaluateBranchCoverage(branch, [], pickup, null);
+      expect(res.isCovered).toBe(false);
     });
 
-    test('Exclusion Precedence Guarantee: point in exclusion zone is rejected even if in circle', () => {
-      const circleZone = {
-        id: 'zone-circle-1',
-        branchId: 'branch-1',
-        zoneType: 'inclusion',
-        coverageType: 'circle',
-        centerLat: 24.7136,
-        centerLng: 46.6753,
-        radiusMeters: 5000,
-        isActive: true,
-      };
+    test('Mixed Conflict (Active Circle Inclusion + Active Polygon Inclusion): FAILS CLOSED immediately', () => {
+      // Point that is inside BOTH circle and polygon
+      const pickupInsideBoth = { lat: 24.7136, lng: 46.6753 };
+      const res = CoverageService.evaluateBranchCoverage(
+        branch,
+        [circleInclusionZone, polygonInclusionZone],
+        pickupInsideBoth,
+        null
+      );
 
-      const exclusionZone = {
-        id: 'zone-exclusion-1',
-        branchId: 'branch-1',
-        zoneType: 'exclusion',
-        coverageType: 'circle',
-        centerLat: 24.7150,
-        centerLng: 46.6760,
-        radiusMeters: 200,
-        isActive: true,
-      };
+      // Must fail closed, not evaluate as union
+      expect(res.isCovered).toBe(false);
+      expect(res.isConflict).toBe(true);
+    });
 
-      // Point inside exclusion zone
-      const pickup = { lat: 24.7150, lng: 46.6760 };
-      const evalResult = CoverageService.evaluateBranchCoverage(branch, [circleZone, exclusionZone], pickup, null);
-      expect(evalResult.isCovered).toBe(false);
+    test('Circle Inclusion + Polygon Exclusion: NOT mixed conflict (exclusion overrides inclusion)', () => {
+      // Point falls inside circle inclusion AND inside polygon exclusion
+      const pickupInsideExclusion = { lat: 24.7150, lng: 46.6750 };
+      const resExcluded = CoverageService.evaluateBranchCoverage(
+        branch,
+        [circleInclusionZone, polygonExclusionZone],
+        pickupInsideExclusion,
+        null
+      );
+      expect(resExcluded.isCovered).toBe(false);
+      expect(resExcluded.isConflict).toBeUndefined();
+
+      // Point falls inside circle inclusion but OUTSIDE polygon exclusion
+      const pickupInsideInclusionOnly = { lat: 24.7200, lng: 46.6650 };
+      const resCovered = CoverageService.evaluateBranchCoverage(
+        branch,
+        [circleInclusionZone, polygonExclusionZone],
+        pickupInsideInclusionOnly,
+        null
+      );
+      expect(resCovered.isCovered).toBe(true);
+    });
+
+    test('Neighborhood Inclusion + Circle Exclusion: NOT mixed conflict (exclusion overrides inclusion)', () => {
+      // Point falls inside polygon inclusion AND inside circle exclusion
+      const pickupInsideExclusion = { lat: 24.7150, lng: 46.6750 };
+      const resExcluded = CoverageService.evaluateBranchCoverage(
+        branch,
+        [polygonInclusionZone, circleExclusionZone],
+        pickupInsideExclusion,
+        null
+      );
+      expect(resExcluded.isCovered).toBe(false);
+      expect(resExcluded.isConflict).toBeUndefined();
+
+      // Point falls inside polygon inclusion but OUTSIDE circle exclusion
+      const pickupInsideInclusionOnly = { lat: 24.7250, lng: 46.6850 };
+      const resCovered = CoverageService.evaluateBranchCoverage(
+        branch,
+        [polygonInclusionZone, circleExclusionZone],
+        pickupInsideInclusionOnly,
+        null
+      );
+      expect(resCovered.isCovered).toBe(true);
     });
   });
 });

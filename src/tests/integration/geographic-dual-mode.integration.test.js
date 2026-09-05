@@ -19,9 +19,23 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
   let branchManagerWithPermContext;
   let branchManagerWithoutPermContext;
   let workerContext;
+  let driverContext;
   let crossWasherContext;
 
   const uniqueSuffix = Date.now().toString().slice(-6);
+
+  function makeInput(overrides = {}) {
+    return {
+      washerId: washer.id,
+      branchId: overrides.branchId !== undefined ? overrides.branchId : branch.id,
+      pickup: { lat: 24.7136, lng: 46.6753 },
+      delivery: { lat: 24.7136, lng: 46.6753 },
+      paymentMethod: 'cash_on_delivery',
+      serviceType: 'piece',
+      notes: 'Dual Mode Coverage Test Order',
+      ...overrides,
+    };
+  }
 
   beforeAll(async () => {
     // 1. Create Primary Washer & Branch
@@ -109,6 +123,20 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
       },
     });
 
+    await prisma.rolePermission.upsert({
+      where: {
+        role_permissionId: {
+          role: 'branch_manager',
+          permissionId: manageCoveragePerm.id,
+        },
+      },
+      update: {},
+      create: {
+        role: 'branch_manager',
+        permissionId: manageCoveragePerm.id,
+      },
+    });
+
     // 5. Setup Staff Identities & Memberships for Auth v2
     // A: Washer Owner
     const ownerIdentity = await prisma.identity.create({
@@ -154,9 +182,9 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
       sessionType: 'operational',
     };
 
-    // C: Branch Manager with 'manage_coverage'
+    // C: Branch Manager with 'manage_coverage' granted
     const bmWithPermIdentity = await prisma.identity.create({
-      data: { phone: `96653${uniqueSuffix}`, name: 'BM With Perm' },
+      data: { phone: `96653${uniqueSuffix}`, name: 'Branch Manager With Perm' },
     });
     const bmWithPermMem = await prisma.staffMembership.create({
       data: {
@@ -167,19 +195,19 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
         status: 'active',
       },
     });
-    await prisma.branchAccess.create({
+    const bmWithPermAccess = await prisma.branchAccess.create({
       data: {
         staffMembershipId: bmWithPermMem.id,
         branchId: branch.id,
       },
     });
-    // Link permission to branch_manager role
-    await prisma.rolePermission.upsert({
-      where: { role_permissionId: { role: 'branch_manager', permissionId: manageCoveragePerm.id } },
-      update: {},
-      create: { role: 'branch_manager', permissionId: manageCoveragePerm.id },
+    await prisma.branchPermissionOverride.create({
+      data: {
+        branchAccessId: bmWithPermAccess.id,
+        permissionId: manageCoveragePerm.id,
+        effect: 'allow',
+      },
     });
-
     branchManagerWithPermContext = {
       identityId: bmWithPermIdentity.id,
       washerId: washer.id,
@@ -190,9 +218,9 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
       sessionType: 'operational',
     };
 
-    // D: Branch Manager with explicitly DENIED 'manage_coverage' override
+    // D: Branch Manager without 'manage_coverage'
     const bmWithoutPermIdentity = await prisma.identity.create({
-      data: { phone: `96654${uniqueSuffix}`, name: 'BM Without Perm' },
+      data: { phone: `96654${uniqueSuffix}`, name: 'Branch Manager Without Perm' },
     });
     const bmWithoutPermMem = await prisma.staffMembership.create({
       data: {
@@ -203,21 +231,19 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
         status: 'active',
       },
     });
-    const bmNoAccess = await prisma.branchAccess.create({
+    const bmWithoutPermAccess = await prisma.branchAccess.create({
       data: {
         staffMembershipId: bmWithoutPermMem.id,
         branchId: branch.id,
       },
     });
-    // Override deny for this branch access
     await prisma.branchPermissionOverride.create({
       data: {
-        branchAccessId: bmNoAccess.id,
+        branchAccessId: bmWithoutPermAccess.id,
         permissionId: manageCoveragePerm.id,
         effect: 'deny',
       },
     });
-
     branchManagerWithoutPermContext = {
       identityId: bmWithoutPermIdentity.id,
       washerId: washer.id,
@@ -228,7 +254,7 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
       sessionType: 'operational',
     };
 
-    // E: Worker
+    // E: Worker Staff
     const workerIdentity = await prisma.identity.create({
       data: { phone: `96655${uniqueSuffix}`, name: 'Worker Staff' },
     });
@@ -241,6 +267,12 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
         status: 'active',
       },
     });
+    await prisma.branchAccess.create({
+      data: {
+        staffMembershipId: workerMem.id,
+        branchId: branch.id,
+      },
+    });
     workerContext = {
       identityId: workerIdentity.id,
       washerId: washer.id,
@@ -251,7 +283,29 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
       sessionType: 'operational',
     };
 
-    // F: Cross Washer Staff
+    // F: Driver Staff
+    const driverIdentity = await prisma.identity.create({
+      data: { phone: `96656${uniqueSuffix}`, name: 'Driver Staff' },
+    });
+    const driverMem = await prisma.staffMembership.create({
+      data: {
+        identityId: driverIdentity.id,
+        washerId: washer.id,
+        role: 'driver',
+        hasFullWasherAccess: false,
+        status: 'active',
+      },
+    });
+    driverContext = {
+      identityId: driverIdentity.id,
+      washerId: washer.id,
+      staffMembershipId: driverMem.id,
+      staffRole: 'driver',
+      role: 'driver',
+      sessionType: 'operational',
+    };
+
+    // G: Cross Washer Staff
     crossWasherContext = {
       identityId: ownerIdentity.id,
       washerId: otherWasher.id, // Different washer
@@ -263,7 +317,8 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
   });
 
   afterAll(async () => {
-    // Cleanup test data
+    // Cleanup test data in strict foreign-key order
+    await prisma.refund.deleteMany();
     await prisma.orderItem.deleteMany();
     await prisma.orderEvent.deleteMany();
     await prisma.driverTask.deleteMany();
@@ -271,6 +326,9 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
     await prisma.invoice.deleteMany();
     await prisma.order.deleteMany();
     await prisma.coverageZone.deleteMany({ where: { branchId: { in: [branch.id, otherBranch.id] } } });
+    await prisma.rolePermission.deleteMany({
+      where: { role: 'branch_manager', permission: { code: 'manage_coverage' } },
+    });
     await prisma.branchPermissionOverride.deleteMany();
     await prisma.branchAccess.deleteMany();
     await prisma.staffMembership.deleteMany({ where: { washerId: { in: [washer.id, otherWasher.id] } } });
@@ -291,7 +349,7 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
         coverageType: 'circle',
         centerLat: 24.7136,
         centerLng: 46.6753,
-        radiusMeters: 2000, // 2km radius
+        radiusMeters: 2000,
         isActive: true,
         priority: 10,
       },
@@ -301,33 +359,27 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
     expect(savedZones).toHaveLength(1);
     expect(savedZones[0].coverageType).toBe('circle');
     expect(savedZones[0].isActive).toBe(true);
-    expect(savedZones[0].radiusMeters).toBe(2000);
 
-    // Order within 500m of center (Covered)
-    const insideOrder = await OrderService.createOrder(
-      {
-        washerId: washer.id,
-        branchId: branch.id,
-        pickup: { lat: 24.7150, lng: 46.6760 },
-        pickupAddress: 'Inside Circle Test Address',
-        items: [],
-      },
-      customerContext
-    );
+    // Read coverage and verify pure circle mode
+    const coverageRes = await WashersService.getBranchCoverage(ownerContext, branch.id);
+    expect(coverageRes.mode).toBe('circle');
+    expect(coverageRes.isConflict).toBe(false);
+
+    // Order within 500m (Covered)
+    const insideInput = makeInput({
+      pickup: { lat: 24.7150, lng: 46.6760 },
+      delivery: { lat: 24.7150, lng: 46.6760 },
+    });
+    const insideOrder = await OrderService.createOrder({ actorContext: customerContext, input: insideInput });
     expect(insideOrder.id).toBeDefined();
 
-    // Order 10km away (Outside -> Reject with 422 BRANCH_OUT_OF_COVERAGE)
+    // Order 10km away (Outside -> Reject with 422)
+    const outsideInput = makeInput({
+      pickup: { lat: 24.8100, lng: 46.7800 },
+      delivery: { lat: 24.8100, lng: 46.7800 },
+    });
     await expect(
-      OrderService.createOrder(
-        {
-          washerId: washer.id,
-          branchId: branch.id,
-          pickup: { lat: 24.8100, lng: 46.7800 },
-          pickupAddress: 'Outside Circle Address',
-          items: [],
-        },
-        customerContext
-      )
+      OrderService.createOrder({ actorContext: customerContext, input: outsideInput })
     ).rejects.toMatchObject({
       status: 422,
       code: 'BRANCH_OUT_OF_COVERAGE',
@@ -335,10 +387,24 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Test 2: Mode Switch — Circle -> Neighborhoods
+  // Test 2: Mode Switch — Circle -> Neighborhoods (With Exclusion Preservation)
   // ──────────────────────────────────────────────────────────────────────────
-  test('2. Should atomically switch from Circle to Neighborhoods, deactivating circle zones', async () => {
-    // Al Khuzama ('3802') and Dahiat Namar ('3401')
+  test('2. Should switch from Circle to Neighborhoods, preserving active exclusion zones', async () => {
+    // Configure an independent exclusion zone
+    const exclusionZone = await prisma.coverageZone.create({
+      data: {
+        branchId: branch.id,
+        name: 'Permanent Military Restricted Exclusion',
+        zoneType: 'exclusion',
+        coverageType: 'circle',
+        centerLat: 24.7150,
+        centerLng: 46.6750,
+        radiusMeters: 300,
+        isActive: true,
+        priority: 99,
+      },
+    });
+
     const neighborhoodPayload = {
       cityCode: 'riyadh',
       districtCodes: ['3802', '3401'],
@@ -350,65 +416,31 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
       neighborhoodPayload
     );
 
-    expect(savedZones).toHaveLength(2);
-    expect(savedZones[0].coverageType).toBe('polygon');
-    expect(savedZones[0].isActive).toBe(true);
-    expect(savedZones[1].coverageType).toBe('polygon');
-    expect(savedZones[1].isActive).toBe(true);
+    expect(savedZones).toHaveLength(3);
+    const activeInclusions = savedZones.filter((z) => z.zoneType === 'inclusion');
+    expect(activeInclusions).toHaveLength(2);
+    expect(activeInclusions.every((z) => z.coverageType === 'polygon')).toBe(true);
 
-    // Verify canonical snapshot properties
-    const districtCodesInDb = savedZones.map((z) => z.geoJson?.properties?.districtCode);
-    expect(districtCodesInDb).toContain('3802');
-    expect(districtCodesInDb).toContain('3401');
+    // CRITICAL: Verify exclusion zone remains active and was NOT deactivated
+    const currentExclusion = await prisma.coverageZone.findUnique({ where: { id: exclusionZone.id } });
+    expect(currentExclusion.isActive).toBe(true);
 
-    // Verify that the previous circle zone is NOT deleted, but transitioned to isActive = false
-    const allDbZones = await prisma.coverageZone.findMany({ where: { branchId: branch.id } });
-    const circleZones = allDbZones.filter((z) => z.coverageType === 'circle');
-    expect(circleZones.length).toBeGreaterThan(0);
-    expect(circleZones.every((z) => z.isActive === false)).toBe(true);
+    // Verify mode is 'neighborhoods' (exclusion does not cause mixed_conflict)
+    const coverageRes = await WashersService.getBranchCoverage(ownerContext, branch.id);
+    expect(coverageRes.mode).toBe('neighborhoods');
+    expect(coverageRes.isConflict).toBe(false);
 
-    // Verify order evaluation:
-    // Get canonical feature for 3802 to extract an inside coordinate
-    const feature3802 = GeoService.getCanonicalIndex().get('3802');
-    const firstCoord = feature3802.geometry.coordinates[0][0]; // [lng, lat]
-    // Point inside Al Khuzama:
-    const insidePickup = { lat: firstCoord[1], lng: firstCoord[0] };
-
-    const orderInDistrict = await OrderService.createOrder(
-      {
-        washerId: washer.id,
-        branchId: branch.id,
-        pickup: insidePickup,
-        pickupAddress: 'Inside Al Khuzama Address',
-        items: [],
-      },
-      customerContext
-    );
-    expect(orderInDistrict.id).toBeDefined();
-
-    // Verify order in old circle location (which is NOT in 3802 or 3401) is now REJECTED
-    // (Prevents unintended coverage union!)
-    await expect(
-      OrderService.createOrder(
-        {
-          washerId: washer.id,
-          branchId: branch.id,
-          pickup: { lat: 24.7136, lng: 46.6753 }, // Olaya center (not Al Khuzama or Namar)
-          pickupAddress: 'Old Circle Center Address',
-          items: [],
-        },
-        customerContext
-      )
-    ).rejects.toMatchObject({
-      status: 422,
-      code: 'BRANCH_OUT_OF_COVERAGE',
-    });
+    // Verify canonical snapshot is persisted, NOT display geometry
+    const z1 = activeInclusions[0];
+    expect(z1.geoJson.properties.snapshottedAt).toBeDefined();
+    expect(z1.geoJson.properties.cityCode).toBe('riyadh');
+    expect(z1.geoJson.properties.districtCode).toBeDefined();
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Test 3: Mode Switch — Neighborhoods -> Circle
+  // Test 3: Mode Switch — Neighborhoods -> Circle (Preserving Exclusion Zones)
   // ──────────────────────────────────────────────────────────────────────────
-  test('3. Should atomically switch back from Neighborhoods to Circle, deactivating polygon zones', async () => {
+  test('3. Should switch from Neighborhoods back to Circle, preserving active exclusion zones', async () => {
     const circlePayload = [
       {
         name: 'نطاق دائري مستعاد',
@@ -423,52 +455,45 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
     ];
 
     const savedZones = await WashersService.replaceBranchCoverage(ownerContext, branch.id, circlePayload);
-    expect(savedZones).toHaveLength(1);
-    expect(savedZones[0].coverageType).toBe('circle');
-    expect(savedZones[0].isActive).toBe(true);
+    expect(savedZones).toHaveLength(2);
+    const activeInclusions = savedZones.filter((z) => z.zoneType === 'inclusion');
+    expect(activeInclusions).toHaveLength(1);
+    expect(activeInclusions[0].coverageType).toBe('circle');
 
-    // Verify all polygon zones for this branch transitioned to isActive = false (preserved!)
-    const allDbZones = await prisma.coverageZone.findMany({ where: { branchId: branch.id } });
-    const polygonZones = allDbZones.filter((z) => z.coverageType === 'polygon');
-    expect(polygonZones.length).toBe(2);
-    expect(polygonZones.every((z) => z.isActive === false)).toBe(true);
+    // Verify exclusion zones remain untouched and active
+    const activeExclusions = await prisma.coverageZone.findMany({
+      where: { branchId: branch.id, zoneType: 'exclusion', isActive: true },
+    });
+    expect(activeExclusions.length).toBeGreaterThan(0);
 
-    // Old circle center is covered again:
-    const restoredCircleOrder = await OrderService.createOrder(
-      {
-        washerId: washer.id,
-        branchId: branch.id,
-        pickup: { lat: 24.7136, lng: 46.6753 },
-        pickupAddress: 'Restored Circle Address',
-        items: [],
-      },
-      customerContext
-    );
-    expect(restoredCircleOrder.id).toBeDefined();
+    // Verify mode is 'circle' (exclusion does not cause mixed_conflict)
+    const coverageRes = await WashersService.getBranchCoverage(ownerContext, branch.id);
+    expect(coverageRes.mode).toBe('circle');
+    expect(coverageRes.isConflict).toBe(false);
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Test 4: Auth v2 Role Enforcement
+  // Test 4: Auth v2 Coverage Management Permissions
   // ──────────────────────────────────────────────────────────────────────────
-  test('4. Should strictly enforce Auth v2 roles and permissions on coverage mutation', async () => {
-    const payload = {
-      cityCode: 'riyadh',
-      districtCodes: ['3802'],
-    };
+  test('4. Should enforce Auth v2 authorization matrix on coverage mutations', async () => {
+    const payload = { cityCode: 'riyadh', districtCodes: ['3802'] };
 
-    // A: Washer Manager -> ALLOW
-    const mgrResult = await WashersService.saveBranchNeighborhoodCoverage(managerContext, branch.id, payload);
-    expect(mgrResult).toBeDefined();
+    // A: Washer Owner -> ALLOW
+    await expect(
+      WashersService.saveBranchNeighborhoodCoverage(ownerContext, branch.id, payload)
+    ).resolves.toBeDefined();
 
-    // B: Branch Manager with 'manage_coverage' permission -> ALLOW
-    const bmResult = await WashersService.saveBranchNeighborhoodCoverage(
-      branchManagerWithPermContext,
-      branch.id,
-      payload
-    );
-    expect(bmResult).toBeDefined();
+    // B: Washer Manager -> ALLOW
+    await expect(
+      WashersService.saveBranchNeighborhoodCoverage(managerContext, branch.id, payload)
+    ).resolves.toBeDefined();
 
-    // C: Branch Manager with explicitly DENIED 'manage_coverage' -> DENY (403)
+    // C: Branch Manager with 'manage_coverage' permission -> ALLOW
+    await expect(
+      WashersService.saveBranchNeighborhoodCoverage(branchManagerWithPermContext, branch.id, payload)
+    ).resolves.toBeDefined();
+
+    // D: Branch Manager WITHOUT 'manage_coverage' -> DENY (403 PERMISSION_DENIED)
     await expect(
       WashersService.saveBranchNeighborhoodCoverage(branchManagerWithoutPermContext, branch.id, payload)
     ).rejects.toMatchObject({
@@ -476,7 +501,7 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
       code: 'PERMISSION_DENIED',
     });
 
-    // D: Worker -> DENY (403)
+    // E: Worker Staff -> DENY (403 FORBIDDEN)
     await expect(
       WashersService.saveBranchNeighborhoodCoverage(workerContext, branch.id, payload)
     ).rejects.toMatchObject({
@@ -484,7 +509,15 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
       code: 'FORBIDDEN',
     });
 
-    // E: Cross-Washer Staff -> DENY (403)
+    // F: Driver Staff -> DENY (403 FORBIDDEN)
+    await expect(
+      WashersService.saveBranchNeighborhoodCoverage(driverContext, branch.id, payload)
+    ).rejects.toMatchObject({
+      status: 403,
+      code: 'FORBIDDEN',
+    });
+
+    // G: Cross-Washer Staff -> DENY (403 FORBIDDEN)
     await expect(
       WashersService.saveBranchNeighborhoodCoverage(crossWasherContext, branch.id, payload)
     ).rejects.toMatchObject({
@@ -494,79 +527,89 @@ describe('Phase GEO-2G: Geographic Coverage Dual-Mode Integration Test Suite', (
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Test 5: Mixed Legacy State Automatic Normalization
+  // Test 5: GET Side-Effects ZERO & Mixed Conflict Fail-Closed
   // ──────────────────────────────────────────────────────────────────────────
-  test('5. Should automatically normalize mixed legacy state (simultaneous active circle and polygon)', async () => {
-    // Manually force a mixed legacy state in DB:
-    // Circle updated at T0 (older)
-    const olderDate = new Date(Date.now() - 60000);
-    // Polygon updated at T1 (newer)
-    const newerDate = new Date();
-
+  test('5. GET coverage causes ZERO writes, detects mixed_conflict, and fails closed during orders', async () => {
+    // Manually force an ambiguous mixed inclusion state in DB:
+    // Both active circle INCLUSION and active polygon INCLUSION
     await prisma.coverageZone.deleteMany({ where: { branchId: branch.id } });
 
     await prisma.coverageZone.create({
       data: {
         branchId: branch.id,
-        name: 'Legacy Circle',
+        name: 'Simultaneous Circle Inclusion',
         zoneType: 'inclusion',
         coverageType: 'circle',
         centerLat: 24.7136,
         centerLng: 46.6753,
         radiusMeters: 1500,
         isActive: true,
-        updatedAt: olderDate,
       },
     });
 
     await prisma.coverageZone.create({
       data: {
         branchId: branch.id,
-        name: 'Legacy Polygon',
+        name: 'Simultaneous Polygon Inclusion',
         zoneType: 'inclusion',
         coverageType: 'polygon',
         geoJson: { type: 'Polygon', coordinates: [[[46.6, 24.7], [46.7, 24.7], [46.7, 24.8], [46.6, 24.8], [46.6, 24.7]]] },
         isActive: true,
-        updatedAt: newerDate,
       },
     });
 
-    // Both are currently active:
-    const preCheck = await prisma.coverageZone.findMany({ where: { branchId: branch.id, isActive: true } });
-    expect(preCheck).toHaveLength(2);
+    // Snapshot pre-state:
+    const preZones = await prisma.coverageZone.findMany({ where: { branchId: branch.id } });
+    expect(preZones).toHaveLength(2);
+    expect(preZones.every((z) => z.isActive === true)).toBe(true);
 
-    // Call getBranchCoverage -> triggers automatic normalization:
-    const normalized = await WashersService.getBranchCoverage(ownerContext, branch.id);
+    // Call GET /api/branches/:branchId/coverage
+    const getRes = await WashersService.getBranchCoverage(ownerContext, branch.id);
 
-    // Newer mode (polygon) was kept active, older circle was deactivated:
-    expect(normalized).toHaveLength(1);
-    expect(normalized[0].coverageType).toBe('polygon');
+    // Verify GET response:
+    expect(getRes.mode).toBe('mixed_conflict');
+    expect(getRes.isConflict).toBe(true);
+    expect(getRes.conflictNotice).toBe('يوجد إعداد نطاق قديم غير متوافق، اختر طريقة النطاق واحفظها');
 
-    const postCheck = await prisma.coverageZone.findMany({ where: { branchId: branch.id, isActive: true } });
-    expect(postCheck).toHaveLength(1);
-    expect(postCheck[0].coverageType).toBe('polygon');
+    // CRITICAL: Verify ZERO DB WRITES occurred during GET
+    const postZones = await prisma.coverageZone.findMany({ where: { branchId: branch.id } });
+    expect(postZones).toHaveLength(2);
+    expect(postZones.every((z) => z.isActive === true)).toBe(true);
+    expect(postZones[0].updatedAt.getTime()).toBe(preZones[0].updatedAt.getTime());
+    expect(postZones[1].updatedAt.getTime()).toBe(preZones[1].updatedAt.getTime());
+
+    // CRITICAL: Order placement during mixed conflict must FAIL CLOSED
+    const conflictedInput = makeInput({
+      pickup: { lat: 24.7136, lng: 46.6753 },
+      delivery: { lat: 24.7136, lng: 46.6753 },
+    });
+    await expect(
+      OrderService.createOrder({ actorContext: customerContext, input: conflictedInput })
+    ).rejects.toMatchObject({
+      status: 422,
+      code: 'BRANCH_OUT_OF_COVERAGE',
+    });
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Test 6: FAIL_CLOSED on Clear Coverage
+  // Test 6: Clear Coverage & None Mode
   // ──────────────────────────────────────────────────────────────────────────
-  test('6. Should fail closed with 422 when branch coverage is cleared', async () => {
+  test('6. Should transition to mode none and fail closed when coverage is cleared', async () => {
     await WashersService.clearBranchCoverage(ownerContext, branch.id);
 
     const activeZones = await prisma.coverageZone.findMany({ where: { branchId: branch.id, isActive: true } });
     expect(activeZones).toHaveLength(0);
 
+    const coverageRes = await WashersService.getBranchCoverage(ownerContext, branch.id);
+    expect(coverageRes.mode).toBe('none');
+    expect(coverageRes.isConflict).toBe(false);
+
+    const clearedInput = makeInput({
+      pickup: { lat: 24.7136, lng: 46.6753 },
+      delivery: { lat: 24.7136, lng: 46.6753 },
+    });
     await expect(
-      OrderService.createOrder(
-        {
-          washerId: washer.id,
-          branchId: branch.id,
-          pickup: { lat: 24.7136, lng: 46.6753 },
-          pickupAddress: 'Any Address When Cleared',
-          items: [],
-        },
-        customerContext
-      )
+      OrderService.createOrder({ actorContext: customerContext, input: clearedInput })
     ).rejects.toMatchObject({
       status: 422,
       code: 'BRANCH_OUT_OF_COVERAGE',

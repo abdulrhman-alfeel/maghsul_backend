@@ -3,12 +3,13 @@ import { ok } from '../../helpers/apiResponse.js';
 
 class GeoController {
   /**
-   * GET /api/geo/riyadh-neighborhoods
-   * Serves optimized display geometry for 165 Riyadh neighborhoods.
+   * GET /api/geo/cities/:cityCode/neighborhoods
+   * Serves optimized display geometry for neighborhoods in the requested city.
    * Supports HTTP caching with ETag and Cache-Control headers.
    */
-  getRiyadhNeighborhoods(req, res) {
-    const { catalog, etag } = GeoService.getDisplayCatalog();
+  getCityNeighborhoods = (req, res) => {
+    const cityCode = String(req.params.cityCode || 'riyadh').trim().toLowerCase();
+    const { catalog, etag } = GeoService.getDisplayCatalog(cityCode);
 
     // Check client ETag for 304 Not Modified
     const clientETag = req.headers['if-none-match'];
@@ -19,23 +20,17 @@ class GeoController {
     res.setHeader('ETag', etag);
     res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
 
-    return ok(res, catalog, 'Riyadh neighborhoods display catalog');
-  }
+    return ok(res, catalog, `${cityCode} neighborhoods display catalog`);
+  };
 
   /**
-   * GET /api/geo/neighborhoods?city=riyadh
-   * Generic city neighborhood catalog dispatcher.
+   * GET /api/geo/riyadh-neighborhoods
+   * Temporary backward-compatible alias delegating directly to cityCode = 'riyadh'.
    */
-  getNeighborhoodsByCity(req, res) {
-    const city = String(req.query.city || 'riyadh').toLowerCase();
-    if (city === 'riyadh') {
-      return this.getRiyadhNeighborhoods(req, res);
-    }
-    return res.status(404).json({
-      ok: false,
-      message: `City '${city}' is not currently supported for neighborhood coverage`,
-    });
-  }
+  getRiyadhNeighborhoods = (req, res) => {
+    req.params.cityCode = 'riyadh';
+    return this.getCityNeighborhoods(req, res);
+  };
 }
 
 export default new GeoController();

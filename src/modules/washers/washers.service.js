@@ -215,7 +215,8 @@ const WashersService = {
   /**
    * Get coverage zones for a specific branch.
    * Requires staff context with access to the branch's washer.
-   * Detects and safely normalizes mixed legacy states (simultaneous active circle and polygon zones).
+   * Strictly READ-ONLY with ZERO side effects.
+   * Resolves mode deterministically from active inclusion zones.
    */
   async getBranchCoverage(authContext, branchId) {
     const branch = await prisma.branch.findUnique({ where: { id: branchId } });
@@ -239,44 +240,44 @@ const WashersService = {
       orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }]
     });
 
-    // Mixed legacy state detection & automatic atomic normalization:
-    // If old data contains simultaneously active circle AND polygon zones,
-    // determine latest mode by max updatedAt and deactivate the older mode.
-    const activeCircle = zones.filter((z) => z.isActive && z.coverageType === 'circle');
-    const activePolygons = zones.filter((z) => z.isActive && (z.coverageType === 'polygon' || z.coverageType === 'multi_polygon'));
+    // Determine mode ONLY from active INCLUSION zones:
+    // Exclusions remain independent and do not count as competing configuration modes.
+    const activeInclusions = zones.filter((z) => z.isActive && z.zoneType === 'inclusion');
+    const activeCircles = activeInclusions.filter((z) => z.coverageType === 'circle');
+    const activePolygons = activeInclusions.filter((z) =>
+      ['polygon', 'multi_polygon'].includes(z.coverageType)
+    );
 
-    if (activeCircle.length > 0 && activePolygons.length > 0) {
-      const latestCircleTime = Math.max(...activeCircle.map((z) => new Date(z.updatedAt).getTime()));
-      const latestPolygonTime = Math.max(...activePolygons.map((z) => new Date(z.updatedAt).getTime()));
-
-      const keepCircle = latestCircleTime >= latestPolygonTime;
-
-      await prisma.coverageZone.updateMany({
-        where: {
-          branchId,
-          coverageType: keepCircle ? { in: ['polygon', 'multi_polygon'] } : 'circle',
-          isActive: true
-        },
-        data: { isActive: false }
-      });
-
-      // Reload normalized zones
-      const normalizedZones = await prisma.coverageZone.findMany({
-        where: { branchId },
-        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }]
-      });
-
-      await CacheService.set(cacheKey, normalizedZones, 3600);
-      return normalizedZones;
+    let mode = 'none';
+    if (activeCircles.length > 0 && activePolygons.length === 0) {
+      mode = 'circle';
+    } else if (activeCircles.length === 0 && activePolygons.length > 0) {
+      mode = 'neighborhoods';
+    } else if (activeCircles.length === 0 && activePolygons.length === 0) {
+      mode = 'none';
+    } else if (activeCircles.length > 0 && activePolygons.length > 0) {
+      mode = 'mixed_conflict';
     }
 
-    await CacheService.set(cacheKey, zones, 3600);
-    return zones;
+    const isConflict = mode === 'mixed_conflict';
+    const conflictNotice = isConflict
+      ? 'يوجد إعداد نطاق قديم غير متوافق، اختر طريقة النطاق واحفظها'
+      : null;
+
+    const result = {
+      mode,
+      isConflict,
+      conflictNotice,
+      zones
+    };
+
+    await CacheService.set(cacheKey, result, 3600);
+    return result;
   },
 
   /**
    * Save Circle coverage zones for a branch.
-   * Deactivates opposing neighborhood (polygon) zones while preserving their historical records.
+   * Atomically deactivates active neighborhood INCLUSION zones while preserving exclusion zones.
    * Atomically commits new circle zones and invalidates cache.
    */
   async replaceBranchCoverage(authContext, branchId, zones) {
@@ -332,21 +333,31 @@ const WashersService = {
       }
     }
 
-    // Atomic switch to Circle: deactivate polygon zones, deactivate previous circle zones, insert new zones
+    // Atomic switch to Circle:
+    // 1. Deactivate active neighborhood INCLUSION zones (preserve exclusions!)
+    // 2. Deactivate previous circle INCLUSION zones (preserve exclusions!)
+    // 3. Create new circle zones
     await prisma.$transaction(async (tx) => {
-      // 1. Deactivate active neighborhood (polygon) zones (preserve records)
       await tx.coverageZone.updateMany({
-        where: { branchId, coverageType: { in: ['polygon', 'multi_polygon'] }, isActive: true },
+        where: {
+          branchId,
+          zoneType: 'inclusion',
+          coverageType: { in: ['polygon', 'multi_polygon'] },
+          isActive: true
+        },
         data: { isActive: false }
       });
 
-      // 2. Deactivate previous circle zones
       await tx.coverageZone.updateMany({
-        where: { branchId, coverageType: 'circle', isActive: true },
+        where: {
+          branchId,
+          zoneType: 'inclusion',
+          coverageType: 'circle',
+          isActive: true
+        },
         data: { isActive: false }
       });
 
-      // 3. Create new circle zones
       if (zones.length > 0) {
         await tx.coverageZone.createMany({
           data: zones.map((z) => ({
@@ -380,8 +391,9 @@ const WashersService = {
 
   /**
    * Save Neighborhood (precise polygon) coverage for a branch.
-   * Resolves canonical geometry from data/geo/riyadh_neighborhoods.geojson.
-   * Deactivates previous circle zones (preserves records) and creates canonical snapshot zones.
+   * Resolves canonical geometry from authoritative dataset.
+   * Atomically deactivates active circle INCLUSION zones (preserves exclusions).
+   * Creates exact canonical CoverageZone snapshots.
    */
   async saveBranchNeighborhoodCoverage(authContext, branchId, { cityCode, districtCodes }) {
     const branch = await prisma.branch.findUnique({ where: { id: branchId } });
@@ -389,12 +401,13 @@ const WashersService = {
 
     await _assertCoverageStaffAuthorization(authContext, branch);
 
-    if (String(cityCode || '').trim().toLowerCase() !== 'riyadh') {
+    const targetCity = String(cityCode || '').trim().toLowerCase();
+    if (targetCity !== 'riyadh') {
       throw new ApiError(400, 'unsupported_city', 'Only cityCode "riyadh" is currently supported');
     }
 
-    // Lookup canonical polygons from GeoService (validates all districtCodes)
-    const canonicalFeatures = GeoService.getCanonicalFeaturesByDistrictCodes(districtCodes);
+    // Lookup canonical polygons from GeoService (validates all districtCodes against authoritative dataset)
+    const canonicalFeatures = GeoService.getCanonicalFeaturesByDistrictCodes(targetCity, districtCodes);
 
     const snapshotZones = canonicalFeatures.map((feature) => {
       const coords = feature.geometry.coordinates;
@@ -419,7 +432,7 @@ const WashersService = {
             nameAr,
             nameEn: feature.properties.nameEn || null,
             municipalityNameAr: feature.properties.municipalityNameAr || null,
-            cityCode: 'riyadh',
+            cityCode: targetCity,
             snapshottedAt: new Date().toISOString()
           }
         },
@@ -428,21 +441,31 @@ const WashersService = {
       };
     });
 
-    // Atomic transaction: deactivate circle zones, deactivate old polygon zones, insert new snapshot zones
+    // Atomic transaction:
+    // 1. Deactivate active circle INCLUSION zones (preserve exclusions!)
+    // 2. Deactivate previous polygon INCLUSION zones (preserve exclusions!)
+    // 3. Insert new canonical snapshot zones
     await prisma.$transaction(async (tx) => {
-      // 1. Deactivate active circle zones (preserve records)
       await tx.coverageZone.updateMany({
-        where: { branchId, coverageType: 'circle', isActive: true },
+        where: {
+          branchId,
+          zoneType: 'inclusion',
+          coverageType: 'circle',
+          isActive: true
+        },
         data: { isActive: false }
       });
 
-      // 2. Deactivate previous polygon zones
       await tx.coverageZone.updateMany({
-        where: { branchId, coverageType: { in: ['polygon', 'multi_polygon'] }, isActive: true },
+        where: {
+          branchId,
+          zoneType: 'inclusion',
+          coverageType: { in: ['polygon', 'multi_polygon'] },
+          isActive: true
+        },
         data: { isActive: false }
       });
 
-      // 3. Insert new canonical snapshot zones
       if (snapshotZones.length > 0) {
         await tx.coverageZone.createMany({
           data: snapshotZones

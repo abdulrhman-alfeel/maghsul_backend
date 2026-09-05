@@ -1,73 +1,94 @@
 import { readFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import ApiError from '../../helpers/apiError.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const CANONICAL_PATH = join(__dirname, '../../../data/geo/riyadh_neighborhoods.geojson');
-const DISPLAY_PATH = join(__dirname, '../../../data/geo/riyadh_neighborhoods_display.json');
+import { getCityConfig } from './city.registry.js';
 
 class GeoService {
   constructor() {
-    this._displayCatalog = null;
-    this._displayETag = null;
-    this._canonicalIndex = null; // Map of districtCode -> canonical Feature
+    this._displayCatalogs = new Map(); // cityCode -> { catalog, etag }
+    this._canonicalIndices = new Map(); // cityCode -> Map<districtCode, Feature>
   }
 
   /**
-   * Lazy-loads display catalog in memory.
+   * Resolves valid city config or throws 404.
+   * @param {string} cityCode
+   * @returns {object}
    */
-  getDisplayCatalog() {
-    if (!this._displayCatalog) {
-      if (!existsSync(DISPLAY_PATH)) {
-        throw new ApiError(500, 'GEO_CATALOG_UNAVAILABLE', 'Display geometry catalog has not been generated');
-      }
-      const raw = readFileSync(DISPLAY_PATH, 'utf-8');
-      this._displayCatalog = JSON.parse(raw);
-      const hash = createHash('sha256').update(raw).digest('hex');
-      this._displayETag = `"${hash.slice(0, 16)}"`;
+  _resolveCityConfig(cityCode = 'riyadh') {
+    const config = getCityConfig(cityCode);
+    if (!config) {
+      throw new ApiError(404, 'city_not_supported', `City "${cityCode}" is not supported`);
     }
-    return {
-      catalog: this._displayCatalog,
-      etag: this._displayETag,
-    };
+    return config;
   }
 
   /**
-   * Lazy-loads and indexes canonical Riyadh neighborhoods for fast O(1) lookups.
+   * Lazy-loads display catalog in memory for a given city.
+   * @param {string} cityCode
    */
-  getCanonicalIndex() {
-    if (!this._canonicalIndex) {
-      if (!existsSync(CANONICAL_PATH)) {
-        throw new ApiError(500, 'CANONICAL_GEO_UNAVAILABLE', 'Authoritative canonical GeoJSON is missing');
+  getDisplayCatalog(cityCode = 'riyadh') {
+    const config = this._resolveCityConfig(cityCode);
+    const key = config.cityCode;
+
+    if (!this._displayCatalogs.has(key)) {
+      if (!existsSync(config.displayPath)) {
+        throw new ApiError(500, 'GEO_CATALOG_UNAVAILABLE', `Display geometry catalog for "${key}" has not been generated`);
       }
-      const raw = JSON.parse(readFileSync(CANONICAL_PATH, 'utf-8'));
+      const raw = readFileSync(config.displayPath, 'utf-8');
+      const catalog = JSON.parse(raw);
+      const hash = createHash('sha256').update(raw).digest('hex');
+      const etag = `"${hash.slice(0, 16)}"`;
+      this._displayCatalogs.set(key, { catalog, etag });
+    }
+    return this._displayCatalogs.get(key);
+  }
+
+  /**
+   * Lazy-loads and indexes canonical neighborhoods for fast O(1) lookups.
+   * @param {string} cityCode
+   */
+  getCanonicalIndex(cityCode = 'riyadh') {
+    const config = this._resolveCityConfig(cityCode);
+    const key = config.cityCode;
+
+    if (!this._canonicalIndices.has(key)) {
+      if (!existsSync(config.canonicalPath)) {
+        throw new ApiError(500, 'CANONICAL_GEO_UNAVAILABLE', `Authoritative canonical GeoJSON for "${key}" is missing`);
+      }
+      const raw = JSON.parse(readFileSync(config.canonicalPath, 'utf-8'));
       const index = new Map();
       for (const feature of raw.features || []) {
         const code = String(feature.properties?.districtCode || feature.id);
         index.set(code, feature);
       }
-      this._canonicalIndex = index;
+      this._canonicalIndices.set(key, index);
     }
-    return this._canonicalIndex;
+    return this._canonicalIndices.get(key);
   }
 
   /**
    * Validates and fetches exact canonical features for a list of district codes.
+   * Supports both signatures:
+   *   getCanonicalFeaturesByDistrictCodes(districtCodes) [defaults to riyadh]
+   *   getCanonicalFeaturesByDistrictCodes(cityCode, districtCodes)
    * Throws 400 if any districtCode is invalid or unknown.
-   *
-   * @param {string[]} districtCodes
-   * @returns {Array<object>} Canonical GeoJSON features
    */
-  getCanonicalFeaturesByDistrictCodes(districtCodes) {
+  getCanonicalFeaturesByDistrictCodes(arg1, arg2) {
+    let cityCode = 'riyadh';
+    let districtCodes;
+
+    if (Array.isArray(arg1)) {
+      districtCodes = arg1;
+    } else {
+      cityCode = arg1;
+      districtCodes = arg2;
+    }
+
     if (!Array.isArray(districtCodes) || districtCodes.length === 0) {
       throw new ApiError(400, 'invalid_district_codes', 'districtCodes must be a non-empty array of strings');
     }
 
-    const index = this.getCanonicalIndex();
+    const index = this.getCanonicalIndex(cityCode);
     const validatedFeatures = [];
     const invalidCodes = [];
 
@@ -87,7 +108,7 @@ class GeoService {
       throw new ApiError(
         400,
         'invalid_district_code',
-        `The following district codes are not recognized in Riyadh City: ${invalidCodes.join(', ')}`
+        `The following district codes are not recognized in city "${cityCode}": ${invalidCodes.join(', ')}`
       );
     }
 

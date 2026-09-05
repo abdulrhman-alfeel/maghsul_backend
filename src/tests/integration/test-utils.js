@@ -50,6 +50,7 @@ export async function setupTestDb() {
     await prisma.driverTask.deleteMany({});
     await prisma.orderItem.deleteMany({});
     await prisma.orderEvent.deleteMany({});
+    await prisma.refund.deleteMany({});
     await prisma.payment.deleteMany({});
     await prisma.invoice.deleteMany({});
     await prisma.order.deleteMany({});
