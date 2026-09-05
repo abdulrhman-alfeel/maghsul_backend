@@ -3,6 +3,11 @@ import ApiError from '../../helpers/apiError.js';
 import { signToken } from '../../utils/jwt.js';
 import { toWesternDigits } from '../../utils/digits.js';
 
+function _isWasherAdmin(user, washerId) {
+  if (!user?.washerId || user.washerId !== washerId) return false;
+  return ['washer_admin', 'washer_owner', 'washer_manager', 'branch_manager', 'admin'].includes(user.role);
+}
+
 function normalizePhone(raw) {
   if (!raw) return raw;
   let phone = toWesternDigits(String(raw).trim());
@@ -15,6 +20,21 @@ function normalizePhone(raw) {
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
 
+function _formatOrder(order) {
+  if (!order) return order;
+  const identity = order.customerMembership?.identity;
+  return {
+    ...order,
+    customer: identity
+      ? {
+          id: identity.id,
+          name: identity.name || 'عميل',
+          phone: identity.phone || '',
+        }
+      : null,
+  };
+}
+
 async function pagedOrders(whereClause, orderBySpec, opts = {}) {
   const limitRaw = Number(opts.limit ?? DEFAULT_LIMIT);
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), MAX_LIMIT) : DEFAULT_LIMIT;
@@ -25,19 +45,68 @@ async function pagedOrders(whereClause, orderBySpec, opts = {}) {
 
   const rows = await prisma.order.findMany({
     where: whereClause,
-    include: { items: true, customer: true },
+    include: {
+      items: true,
+      customerMembership: {
+        include: { identity: true }
+      }
+    },
     orderBy: finalOrderBy,
     take: limit + 1,
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
   });
 
   const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
+  const rawItems = hasMore ? rows.slice(0, limit) : rows;
+  const items = rawItems.map(_formatOrder);
   const nextCursor = hasMore && items.length ? items[items.length - 1]?.id ?? null : null;
   return { items, nextCursor };
 }
 
 import CacheService from '../../services/cache.service.js';
+import GeoService from '../geo/geo.service.js';
+import { PermissionService } from '../auth/services/permission.service.js';
+
+/**
+ * Strictly validates coverage mutation authorization under Auth v2.
+ * - Enforces washer ownership: authContext.washerId === branch.washerId
+ * - Allows washer_owner and washer_manager (washer-level management)
+ * - Allows branch_manager ONLY if assigned to this branch AND PermissionService grants 'manage_coverage'
+ * - Strictly denies worker, driver, and any cross-washer access.
+ */
+async function _assertCoverageStaffAuthorization(authContext, branch) {
+  if (!authContext?.washerId || authContext.washerId !== branch.washerId) {
+    throw new ApiError(403, 'FORBIDDEN', 'Forbidden: Cross-washer coverage access denied');
+  }
+
+  const role = authContext.staffRole || authContext.role;
+
+  // 1. washer_owner and washer_manager have washer-wide coverage authority
+  if (role === 'washer_owner' || role === 'washer_manager') {
+    return true;
+  }
+
+  // 2. branch_manager is strictly scoped to assigned branch AND requires 'manage_coverage'
+  if (role === 'branch_manager') {
+    if (!authContext.branchId || authContext.branchId !== branch.id) {
+      throw new ApiError(403, 'FORBIDDEN', 'Forbidden: Branch managers can only manage their assigned branch');
+    }
+    if (authContext.staffMembershipId) {
+      const perms = await PermissionService.resolvePermissions(
+        authContext.washerId,
+        authContext.staffMembershipId,
+        branch.id
+      );
+      if (perms.has('manage_coverage')) {
+        return true;
+      }
+    }
+    throw new ApiError(403, 'PERMISSION_DENIED', 'Forbidden: Missing canonical manage_coverage permission');
+  }
+
+  // 3. All other roles (worker, driver, etc.) are strictly denied
+  throw new ApiError(403, 'FORBIDDEN', 'Forbidden: Staff role is not authorized to manage coverage');
+}
 
 const WashersService = {
   /**
@@ -45,12 +114,32 @@ const WashersService = {
    * body: adminPhone (إجباري), adminName (اختياري), name (اسم المغسلة إجباري), phone (هاتف المغسلة اختياري)
    */
   async createWasher(body) {
-    const { adminPhone, adminName, name: washerName, phone: washerPhone } = body;
+    const { adminPhone, adminName, name: washerName, phone: washerPhone, address, lat, lng } = body;
     const normalizedAdminPhone = normalizePhone(adminPhone);
     const normalizedWasherPhone = washerPhone ? normalizePhone(washerPhone) : null;
 
     const washer = await prisma.washer.create({
-      data: { name: washerName, phone: normalizedWasherPhone }
+      data: {
+        name: washerName,
+        phone: normalizedWasherPhone,
+        address: address || null,
+        serviceLat: lat ? Number(lat) : null,
+        serviceLng: lng ? Number(lng) : null,
+      }
+    });
+
+    // إنشاء الفرع الرئيسي تلقائياً للمغسلة
+    const mainBranch = await prisma.branch.create({
+      data: {
+        name: 'الفرع الرئيسي',
+        washerId: washer.id,
+        address: address || null,
+        lat: lat ? Number(lat) : null,
+        lng: lng ? Number(lng) : null,
+        status: 'active',
+        isOpen: true,
+        acceptingOrders: true,
+      }
     });
 
     const identity = await prisma.identity.upsert({
@@ -65,16 +154,24 @@ const WashersService = {
       create: { identityId: identity.id, washerId: washer.id, role: 'washer_owner', status: 'active', hasFullWasherAccess: true }
     });
 
+    // ربط الفرع بصلاحيات الوصول
+    await prisma.branchAccess.upsert({
+      where: { staffMembershipId_branchId: { staffMembershipId: staffMembership.id, branchId: mainBranch.id } },
+      update: {},
+      create: { staffMembershipId: staffMembership.id, branchId: mainBranch.id }
+    });
+
     const user = {
       id: identity.id,
       phone: identity.phone,
       name: identity.name,
       role: staffMembership.role,
-      washerId: washer.id
+      washerId: washer.id,
+      branchId: mainBranch.id
     };
 
-    const token = signToken({ userId: user.id, role: user.role, washerId: user.washerId });
-    return { washer, user, token };
+    const token = signToken({ userId: user.id, role: user.role, washerId: user.washerId, branchId: mainBranch.id });
+    return { washer, branch: mainBranch, user, token };
   },
 
   /** جلب كل المغاسل مع Pagination بالـ cursor */
@@ -118,6 +215,7 @@ const WashersService = {
   /**
    * Get coverage zones for a specific branch.
    * Requires staff context with access to the branch's washer.
+   * Detects and safely normalizes mixed legacy states (simultaneous active circle and polygon zones).
    */
   async getBranchCoverage(authContext, branchId) {
     const branch = await prisma.branch.findUnique({ where: { id: branchId } });
@@ -127,7 +225,8 @@ const WashersService = {
     if (!authContext.washerId || authContext.washerId !== branch.washerId) {
       throw new ApiError(403, 'forbidden', 'Forbidden');
     }
-    if (authContext.branchId && authContext.branchId !== branchId) {
+    const isOwnerOrManager = ['washer_owner', 'washer_manager'].includes(authContext.staffRole || authContext.role);
+    if (!isOwnerOrManager && authContext.branchId && authContext.branchId !== branchId) {
       throw new ApiError(403, 'forbidden', 'Forbidden: Scope restricted to assigned branch');
     }
 
@@ -140,24 +239,51 @@ const WashersService = {
       orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }]
     });
 
+    // Mixed legacy state detection & automatic atomic normalization:
+    // If old data contains simultaneously active circle AND polygon zones,
+    // determine latest mode by max updatedAt and deactivate the older mode.
+    const activeCircle = zones.filter((z) => z.isActive && z.coverageType === 'circle');
+    const activePolygons = zones.filter((z) => z.isActive && (z.coverageType === 'polygon' || z.coverageType === 'multi_polygon'));
+
+    if (activeCircle.length > 0 && activePolygons.length > 0) {
+      const latestCircleTime = Math.max(...activeCircle.map((z) => new Date(z.updatedAt).getTime()));
+      const latestPolygonTime = Math.max(...activePolygons.map((z) => new Date(z.updatedAt).getTime()));
+
+      const keepCircle = latestCircleTime >= latestPolygonTime;
+
+      await prisma.coverageZone.updateMany({
+        where: {
+          branchId,
+          coverageType: keepCircle ? { in: ['polygon', 'multi_polygon'] } : 'circle',
+          isActive: true
+        },
+        data: { isActive: false }
+      });
+
+      // Reload normalized zones
+      const normalizedZones = await prisma.coverageZone.findMany({
+        where: { branchId },
+        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }]
+      });
+
+      await CacheService.set(cacheKey, normalizedZones, 3600);
+      return normalizedZones;
+    }
+
     await CacheService.set(cacheKey, zones, 3600);
     return zones;
   },
 
   /**
-   * Replace all coverage zones for a branch (delete + create).
-   * Validates each zone's geometry before persisting.
+   * Save Circle coverage zones for a branch.
+   * Deactivates opposing neighborhood (polygon) zones while preserving their historical records.
+   * Atomically commits new circle zones and invalidates cache.
    */
   async replaceBranchCoverage(authContext, branchId, zones) {
     const branch = await prisma.branch.findUnique({ where: { id: branchId } });
     if (!branch) throw new ApiError(404, 'branch_not_found', 'Branch not found');
 
-    if (!authContext.washerId || authContext.washerId !== branch.washerId) {
-      throw new ApiError(403, 'forbidden', 'Forbidden');
-    }
-    if (authContext.branchId && authContext.branchId !== branchId) {
-      throw new ApiError(403, 'forbidden', 'Forbidden: Scope restricted to assigned branch');
-    }
+    await _assertCoverageStaffAuthorization(authContext, branch);
 
     // Validate each zone
     if (!Array.isArray(zones)) throw new ApiError(400, 'invalid_zones', 'zones must be an array');
@@ -206,14 +332,26 @@ const WashersService = {
       }
     }
 
-    // Atomic replace: delete all existing + create new
+    // Atomic switch to Circle: deactivate polygon zones, deactivate previous circle zones, insert new zones
     await prisma.$transaction(async (tx) => {
-      await tx.coverageZone.deleteMany({ where: { branchId } });
+      // 1. Deactivate active neighborhood (polygon) zones (preserve records)
+      await tx.coverageZone.updateMany({
+        where: { branchId, coverageType: { in: ['polygon', 'multi_polygon'] }, isActive: true },
+        data: { isActive: false }
+      });
+
+      // 2. Deactivate previous circle zones
+      await tx.coverageZone.updateMany({
+        where: { branchId, coverageType: 'circle', isActive: true },
+        data: { isActive: false }
+      });
+
+      // 3. Create new circle zones
       if (zones.length > 0) {
         await tx.coverageZone.createMany({
           data: zones.map((z) => ({
             branchId,
-            name: z.name || null,
+            name: z.name || 'نطاق دائري',
             zoneType: z.zoneType || 'inclusion',
             coverageType: z.coverageType || 'circle',
             bbMinLat: z.bbMinLat ?? null,
@@ -225,7 +363,7 @@ const WashersService = {
             radiusMeters: z.radiusMeters ?? null,
             geoJson: z.geoJson ?? null,
             isActive: z.isActive !== undefined ? z.isActive : true,
-            priority: z.priority ?? 0
+            priority: z.priority ?? 10
           }))
         });
       }
@@ -235,33 +373,113 @@ const WashersService = {
     await CacheService.del(`coverage:branch:${branchId}`);
 
     return prisma.coverageZone.findMany({
-      where: { branchId },
+      where: { branchId, isActive: true },
+      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }]
+    });
+  },
+
+  /**
+   * Save Neighborhood (precise polygon) coverage for a branch.
+   * Resolves canonical geometry from data/geo/riyadh_neighborhoods.geojson.
+   * Deactivates previous circle zones (preserves records) and creates canonical snapshot zones.
+   */
+  async saveBranchNeighborhoodCoverage(authContext, branchId, { cityCode, districtCodes }) {
+    const branch = await prisma.branch.findUnique({ where: { id: branchId } });
+    if (!branch) throw new ApiError(404, 'branch_not_found', 'Branch not found');
+
+    await _assertCoverageStaffAuthorization(authContext, branch);
+
+    if (String(cityCode || '').trim().toLowerCase() !== 'riyadh') {
+      throw new ApiError(400, 'unsupported_city', 'Only cityCode "riyadh" is currently supported');
+    }
+
+    // Lookup canonical polygons from GeoService (validates all districtCodes)
+    const canonicalFeatures = GeoService.getCanonicalFeaturesByDistrictCodes(districtCodes);
+
+    const snapshotZones = canonicalFeatures.map((feature) => {
+      const coords = feature.geometry.coordinates;
+      const bbox = GeoService.computeBoundingBox(coords);
+      const districtCode = String(feature.properties.districtCode || feature.id);
+      const nameAr = feature.properties.nameAr || `حي ${districtCode}`;
+
+      return {
+        branchId,
+        name: nameAr,
+        zoneType: 'inclusion',
+        coverageType: 'polygon',
+        bbMinLat: bbox.bbMinLat,
+        bbMaxLat: bbox.bbMaxLat,
+        bbMinLng: bbox.bbMinLng,
+        bbMaxLng: bbox.bbMaxLng,
+        geoJson: {
+          type: 'Polygon',
+          coordinates: coords,
+          properties: {
+            districtCode,
+            nameAr,
+            nameEn: feature.properties.nameEn || null,
+            municipalityNameAr: feature.properties.municipalityNameAr || null,
+            cityCode: 'riyadh',
+            snapshottedAt: new Date().toISOString()
+          }
+        },
+        isActive: true,
+        priority: 10
+      };
+    });
+
+    // Atomic transaction: deactivate circle zones, deactivate old polygon zones, insert new snapshot zones
+    await prisma.$transaction(async (tx) => {
+      // 1. Deactivate active circle zones (preserve records)
+      await tx.coverageZone.updateMany({
+        where: { branchId, coverageType: 'circle', isActive: true },
+        data: { isActive: false }
+      });
+
+      // 2. Deactivate previous polygon zones
+      await tx.coverageZone.updateMany({
+        where: { branchId, coverageType: { in: ['polygon', 'multi_polygon'] }, isActive: true },
+        data: { isActive: false }
+      });
+
+      // 3. Insert new canonical snapshot zones
+      if (snapshotZones.length > 0) {
+        await tx.coverageZone.createMany({
+          data: snapshotZones
+        });
+      }
+    });
+
+    // Invalidate Redis cache
+    await CacheService.del(`coverage:branch:${branchId}`);
+
+    return prisma.coverageZone.findMany({
+      where: { branchId, isActive: true },
       orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }]
     });
   },
 
   /**
    * Clear all coverage zones for a branch.
+   * Deactivates all active coverage zones (sets isActive: false) and invalidates cache.
    */
   async clearBranchCoverage(authContext, branchId) {
     const branch = await prisma.branch.findUnique({ where: { id: branchId } });
     if (!branch) throw new ApiError(404, 'branch_not_found', 'Branch not found');
 
-    if (!authContext.washerId || authContext.washerId !== branch.washerId) {
-      throw new ApiError(403, 'forbidden', 'Forbidden');
-    }
-    if (authContext.branchId && authContext.branchId !== branchId) {
-      throw new ApiError(403, 'forbidden', 'Forbidden: Scope restricted to assigned branch');
-    }
+    await _assertCoverageStaffAuthorization(authContext, branch);
 
-    await prisma.coverageZone.deleteMany({ where: { branchId } });
+    await prisma.coverageZone.updateMany({
+      where: { branchId, isActive: true },
+      data: { isActive: false }
+    });
     await CacheService.del(`coverage:branch:${branchId}`);
 
     return { cleared: true };
   },
 
   async getPaymentMethods(user, washerId) {
-    if (!user.washerId || user.washerId !== washerId || user.role !== 'washer_admin') {
+    if (!_isWasherAdmin(user, washerId)) {
       throw new ApiError(403, 'forbidden', 'Forbidden');
     }
 
@@ -276,7 +494,7 @@ const WashersService = {
   },
 
   async savePaymentMethods(user, washerId, body) {
-    if (!user.washerId || user.washerId !== washerId || user.role !== 'washer_admin') {
+    if (!_isWasherAdmin(user, washerId)) {
       throw new ApiError(403, 'forbidden', 'Forbidden');
     }
     const methods = Array.isArray(body.methods) ? body.methods : [];
@@ -297,7 +515,7 @@ const WashersService = {
   },
 
   async getLocation(user, washerId) {
-    if (!user.washerId || user.washerId !== washerId || user.role !== 'washer_admin') {
+    if (!_isWasherAdmin(user, washerId)) {
       throw new ApiError(403, 'forbidden', 'Forbidden');
     }
     const cacheKey = `washer:location:${washerId}`;
@@ -316,7 +534,7 @@ const WashersService = {
   },
 
   async saveLocation(user, washerId, body) {
-    if (!user.washerId || user.washerId !== washerId || user.role !== 'washer_admin') {
+    if (!_isWasherAdmin(user, washerId)) {
       throw new ApiError(403, 'forbidden', 'Forbidden');
     }
     const { lat, lng, radiusMeters } = body;
@@ -342,7 +560,7 @@ const WashersService = {
   async pendingOrders(user, washerId, opts = {}) {
     if (!user.washerId || user.washerId !== washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
     return pagedOrders(
-      { washerId, status: { in: ['pending', 'pending_pickup'] } },
+      { washerId, status: { in: ['pending_pickup'] } },
       { createdAt: 'asc' },
       opts
     );
@@ -352,20 +570,20 @@ const WashersService = {
   async ordersToReceive(user, washerId, opts = {}) {
     if (!user.washerId || user.washerId !== washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
     return pagedOrders(
-      { washerId, status: { in: ['accepted', 'picked_up', 'delivered_to_laundry'] } },
+      { washerId, status: { in: ['driver_arrived_pickup', 'delivered_to_laundry'] } },
       { createdAt: 'asc' },
       opts
     );
   },
 
-  /** طلبات جاهزة للفرز — فقط بعد وصول الطلب للمغسلة أو بدء الفرز (لا يشمل picked_up قبل تسليم المغسلة) */
+  /** طلبات جاهزة للفرز — فقط بعد وصول الطلب للمغسلة أو بدء الفرز */
   async ordersToSort(user, washerId, opts = {}) {
     if (!user.washerId || user.washerId !== washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
     return pagedOrders(
       {
         washerId,
         status: {
-          in: ['delivered_to_laundry', 'received_in_laundry', 'sorting', 'sorting_in_progress']
+          in: ['delivered_to_laundry', 'received_in_laundry', 'sorting_in_progress']
         }
       },
       { createdAt: 'asc' },
@@ -375,19 +593,14 @@ const WashersService = {
 
   /**
    * طلبات بانتظار إيداع المغسلة: من إنشاء الطلب حتى قبل `delivered_to_laundry`.
-   * يشمل غير المُسنَد للسائق، والمُسنَد، وبعد `picked_up` (استلام من العميل) ما دام السائق لم يُسلّم للمغسلة بعد.
    */
   async ordersAwaitingDriverPickup(user, washerId, opts = {}) {
     if (!user.washerId || user.washerId !== washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
     const preHandoffToLaundry = [
-      'pending',
-      'accepted',
       'pending_pickup',
       'pickup_assigned',
       'driver_heading_to_pickup',
-      'driver_arrived_pickup',
-      /** مع السائق بعد الاستلام من العميل، حتى يضغط «تسليم للمغسلة» */
-      'picked_up'
+      'driver_arrived_pickup'
     ];
     return pagedOrders(
       {
@@ -399,11 +612,11 @@ const WashersService = {
     );
   },
 
-  /** طلبات تم تنفيذها (status = completed) */
+  /** طلبات تم تنفيذها (status = delivered) */
   async ordersCompleted(user, washerId, opts = {}) {
     if (!user.washerId || user.washerId !== washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
     return pagedOrders(
-      { washerId, status: 'completed' },
+      { washerId, status: 'delivered' },
       [{ createdAt: 'desc' }, { id: 'desc' }],
       opts
     );
@@ -413,7 +626,7 @@ const WashersService = {
   async ordersSortedAwaitingPayment(user, washerId, opts = {}) {
     if (!user.washerId || user.washerId !== washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
     return pagedOrders(
-      { washerId, status: { in: ['sorting_confirmed'] } },
+      { washerId, status: { in: ['sorting_confirmed', 'invoice_generated', 'payment_pending'] } },
       { createdAt: 'asc' },
       opts
     );
@@ -423,7 +636,7 @@ const WashersService = {
   async ordersInWash(user, washerId, opts = {}) {
     if (!user.washerId || user.washerId !== washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
     return pagedOrders(
-      { washerId, status: { in: ['washing'] } },
+      { washerId, status: { in: ['payment_confirmed', 'drying', 'ironing', 'packaging'] } },
       { createdAt: 'asc' },
       opts
     );
@@ -433,7 +646,7 @@ const WashersService = {
   async ordersAwaitingDelivery(user, washerId, opts = {}) {
     if (!user.washerId || user.washerId !== washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
     return pagedOrders(
-      { washerId, status: { in: ['ready', 'ready_for_delivery', 'delivering'] } },
+      { washerId, status: { in: ['ready_for_delivery', 'delivery_assigned', 'driver_heading_to_delivery', 'driver_arrived_delivery'] } },
       { createdAt: 'asc' },
       opts
     );
@@ -449,20 +662,26 @@ const WashersService = {
 
     const rows = await prisma.order.findMany({
       where: { washerId, status: 'delivered_to_laundry' },
-      include: { items: true, customer: true },
+      include: {
+        items: true,
+        customerMembership: {
+          include: { identity: true }
+        }
+      },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
     });
 
     const hasMore = rows.length > limit;
-    const items = hasMore ? rows.slice(0, limit) : rows;
+    const rawItems = hasMore ? rows.slice(0, limit) : rows;
+    const items = rawItems.map(_formatOrder);
     const nextCursor = hasMore ? String(items[items.length - 1]?.id ?? '') : null;
 
     return { items, nextCursor };
   },
 
-  /** طلبات منجزة (تم توصيلها للعميل) status=completed مع Pagination بالـ cursor */
+  /** طلبات منجزة (تم توصيلها للعميل) status=delivered مع Pagination بالـ cursor */
   async completedPaged(user, washerId, query = {}) {
     if (!user.washerId || user.washerId !== washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
 
@@ -471,15 +690,21 @@ const WashersService = {
     const cursor = query.cursor ? String(query.cursor) : null;
 
     const rows = await prisma.order.findMany({
-      where: { washerId, status: 'completed' },
-      include: { items: true, customer: true },
+      where: { washerId, status: 'delivered' },
+      include: {
+        items: true,
+        customerMembership: {
+          include: { identity: true }
+        }
+      },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
     });
 
     const hasMore = rows.length > limit;
-    const items = hasMore ? rows.slice(0, limit) : rows;
+    const rawItems = hasMore ? rows.slice(0, limit) : rows;
+    const items = rawItems.map(_formatOrder);
     const nextCursor = hasMore ? String(items[items.length - 1]?.id ?? '') : null;
 
     return { items, nextCursor };
@@ -514,7 +739,7 @@ const WashersService = {
   },
 
   async getSchedule(user, washerId) {
-    if (!user.washerId || user.washerId !== washerId || user.role !== 'washer_admin') {
+    if (!_isWasherAdmin(user, washerId)) {
       throw new ApiError(403, 'forbidden', 'Forbidden');
     }
     const cacheKey = `washer:schedule:${washerId}`;
@@ -530,7 +755,7 @@ const WashersService = {
   },
 
   async saveSchedule(user, washerId, rows) {
-    if (!user.washerId || user.washerId !== washerId || user.role !== 'washer_admin') {
+    if (!_isWasherAdmin(user, washerId)) {
       throw new ApiError(403, 'forbidden', 'Forbidden');
     }
 
@@ -567,7 +792,7 @@ const WashersService = {
   },
 
   async updateProfile(user, washerId, body) {
-    if (!user.washerId || user.washerId !== washerId || user.role !== 'washer_admin') {
+    if (!_isWasherAdmin(user, washerId)) {
       throw new ApiError(403, 'forbidden', 'Forbidden');
     }
     const {

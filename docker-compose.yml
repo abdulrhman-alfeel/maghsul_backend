@@ -5,18 +5,46 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-laundry_db}?schema=public
     ports:
       - "${PORT:-8080}:8080"
-    # يسمح للحاوية بالوصول لقاعدة البيانات المثبتة مباشرة على السيرفر (خارج Docker)
+    volumes:
+      - .:/usr/src/app
+      - /usr/src/app/node_modules
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: >
       sh -c "npx prisma migrate deploy && npx prisma generate && npm start"
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_started
     restart: always
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-laundry_db}
+    ports:
+      - "5433:5432"
+    volumes:
+      - laundry_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-laundry_db}"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    restart: always
+
   redis:
     image: redis:7-alpine
+    ports:
+      - "6379:6379"
     restart: always
+
+volumes:
+  laundry_postgres_data:
+

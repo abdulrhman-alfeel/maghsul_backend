@@ -1,19 +1,42 @@
+import prisma from '../config/db.js';
 import { ApplicationRegistryService } from '../config/application.registry.js';
 import ApiError from '../helpers/apiError.js';
 
 /**
  * AppClient Resolver Middleware
  *
- * Unified Dynamic Resolution Strategy:
- * 1. X-App-Client-Key header → DB AppClient / cache lookup (returns { appClientId, washerId, isActive })
- * 2. X-Application-Id header → DB AppClient / cache lookup (returns { appClientId, appKey, washerId, isActive })
- *
- * Security:
- * - appKey / applicationId are NOT security secrets; they identify the client application.
- * - washerId MUST only come from AppClient/ApplicationRegistry, never from request body/query.
+ * Strategies:
+ * 0. Direct Washer Identification (X-Washer-Id or Washer ID in X-Application-Id)
+ * 1. X-App-Client-Key header
+ * 2. X-Application-Id header
  */
 export default async function appClientResolver(req, res, next) {
   try {
+    // Strategy 0: Direct Washer ID Identification
+    const candidateWasherId = (req.headers['x-washer-id'] || req.headers['x-application-id'] || '').toString().trim();
+    if (candidateWasherId) {
+      const directWasher = await prisma.washer.findUnique({
+        where: { id: candidateWasherId },
+        select: { id: true, name: true, status: true }
+      });
+
+      if (directWasher) {
+        if (directWasher.status !== 'active') {
+          throw new ApiError(403, 'WASHER_INACTIVE', 'المغسلة غير مفعلة حالياً');
+        }
+
+        req.appClient = {
+          appClientId: directWasher.id,
+          appKey: directWasher.id,
+          washerId: directWasher.id,
+          isActive: true,
+          appName: directWasher.name
+        };
+
+        return next();
+      }
+    }
+
     // Strategy 1: X-App-Client-Key
     const appKey = req.headers['x-app-client-key'];
     if (appKey && typeof appKey === 'string' && appKey.trim()) {

@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import prisma from '../config/db.js';
+import { TokenService } from '../modules/auth/services/token.service.js';
 
 // مسارات مسموح بها لحسابات pending_deletion فقط
 const PENDING_DELETION_ALLOWED_PATHS = [
@@ -16,10 +17,28 @@ export default async function auth(req, res, next) {
     if (!token) {
       return res.status(401).json({ ok: false, error: 'Missing token' });
     }
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    let decoded;
+    try {
+      decoded = TokenService.verifyAccessToken(token);
+    } catch (v2Err) {
+      if (v2Err?.name === 'TokenExpiredError' || v2Err?.code === 'TOKEN_EXPIRED') {
+        return res.status(401).json({ ok: false, error: 'Token expired. Please login again.', code: 'TOKEN_EXPIRED' });
+      }
+      // Fallback for legacy tokens
+      try {
+        decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET);
+      } catch (err2) {
+        if (err2?.name === 'TokenExpiredError') {
+          return res.status(401).json({ ok: false, error: 'Token expired. Please login again.', code: 'TOKEN_EXPIRED' });
+        }
+        decoded = jwt.verify(token, process.env.JWT_SECRET);
+      }
+    }
+
     req.authContext = decoded;
 
-    const userId = decoded.userId || decoded.id || decoded.identityId;
+    const userId = decoded.identityId || decoded.userId || decoded.id;
     if (userId) {
       const dbIdentity = await prisma.identity.findUnique({
         where: { id: userId },
@@ -54,12 +73,16 @@ export default async function auth(req, res, next) {
         }
       }
 
-      const matchingStaff = decoded.washerId
-        ? dbIdentity.staffMemberships.find(s => s.washerId === decoded.washerId)
-        : dbIdentity.staffMemberships[0];
+      const matchingStaff = decoded.staffMembershipId
+        ? dbIdentity.staffMemberships.find(s => s.id === decoded.staffMembershipId)
+        : (decoded.washerId
+            ? dbIdentity.staffMemberships.find(s => s.washerId === decoded.washerId)
+            : dbIdentity.staffMemberships[0]);
 
       const resolvedRole = decoded.role || matchingStaff?.role || (dbIdentity.customerMemberships.length > 0 ? 'customer' : 'customer');
       const resolvedWasherId = decoded.washerId || matchingStaff?.washerId || dbIdentity.customerMemberships[0]?.washerId || null;
+      const resolvedBranchId = decoded.branchId || null;
+      const resolvedStaffMembershipId = decoded.staffMembershipId || matchingStaff?.id || null;
 
       const userContext = {
         ...decoded,
@@ -69,6 +92,8 @@ export default async function auth(req, res, next) {
         name: dbIdentity.name,
         role: resolvedRole,
         washerId: resolvedWasherId,
+        branchId: resolvedBranchId,
+        staffMembershipId: resolvedStaffMembershipId,
         status: dbIdentity.status,
       };
 
@@ -78,7 +103,7 @@ export default async function auth(req, res, next) {
 
     next();
   } catch (err) {
-    if (err?.name === 'TokenExpiredError') {
+    if (err?.name === 'TokenExpiredError' || err?.code === 'TOKEN_EXPIRED') {
       return res.status(401).json({ ok: false, error: 'Token expired. Please login again.' });
     }
     console.log('JWT Verify Error:', err.message);

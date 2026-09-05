@@ -1,16 +1,13 @@
 import { Queue } from 'bullmq';
-import ioredis from './redis.js';
-
+import { createWorkerRedisClient } from './redis.js';
 import logger from './logger.js';
-
-const connection = ioredis;
 
 let _notificationQueue = null;
 
 export const getNotificationQueue = () => {
   if (!_notificationQueue) {
     _notificationQueue = new Queue('notifications', {
-      connection,
+      connection: createWorkerRedisClient(),
       defaultJobOptions: {
         attempts: 3,
         backoff: {
@@ -25,3 +22,4 @@ export const getNotificationQueue = () => {
   }
   return _notificationQueue;
 };
+

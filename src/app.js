@@ -22,7 +22,6 @@ import errorHandler from './middlewares/errorHandler.js';
 import authV2Routes from './modules/auth/v2/auth.v2.routes.js';
 import customerRoutes from './modules/customer/customer.routes.js';
 import staffInvitationRoutes from './modules/auth/v2/staff-invitation.routes.js';
-import authRoutes from './modules/auth/auth.routes.js';
 import userRoutes from './modules/users/user.routes.js';
 import branchesRoutes from './modules/washers/branches.routes.js';
 import orderRoutes from './modules/orders/order.routes.js';
@@ -33,6 +32,7 @@ import notificationRoutes from './modules/notifications/notifications.routes.js'
 import paymentRoutes from './modules/payments/payment.routes.js';
 import uploadRoutes from './modules/uploads/upload.routes.js';
 import analyticsRoutes from './modules/analytics/analytics.routes.js';
+import geoRoutes from './modules/geo/geo.routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -106,8 +106,8 @@ app.get('/health', (req, res) => {
 app.get('/docs/openapi.yaml', (req, res) => res.sendFile(path.join(__dirname, '../docs/openapi.yaml')));
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
+app.use('/api/auth/v2', authV2Routes);
 app.use('/api/auth', authV2Routes);
-app.use('/api/auth', authRoutes);
 app.use('/api/staff-invitations', staffInvitationRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/customer', customerRoutes);
@@ -120,6 +120,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/uploads', uploadRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/geo', geoRoutes);
 
 
 // Sentry Error Handler

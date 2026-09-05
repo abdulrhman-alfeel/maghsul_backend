@@ -44,7 +44,7 @@ export async function requireCanonicalCustomerContext(req, res, next) {
       sessionId: req.authContext.sessionId,
       applicationId: req.authContext.applicationId,
       appType: 'customer',
-      washerId: internalState.washerId
+      washerId: internalState.washerId || session.washerId || req.authContext?.washerId || null
     });
 
     next();

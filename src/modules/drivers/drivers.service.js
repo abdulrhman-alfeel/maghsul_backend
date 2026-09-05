@@ -5,26 +5,58 @@ import OrderService from '../orders/order.service.js';
 import NotificationsService from '../notifications/notifications.service.js';
 import { RealtimeOutboxService } from '../realtime/realtime-outbox.service.js';
 
+function _canDrive(user) {
+  if (!user?.washerId) return false;
+  const allowed = ['driver', 'washer_owner', 'washer_admin', 'washer_manager', 'branch_manager', 'worker', 'admin'];
+  return allowed.includes(user.role);
+}
+
+async function _resolveDriverStaffMembershipId(user, washerId) {
+  if (user?.staffMembershipId) return user.staffMembershipId;
+  const identityId = user?.userId || user?.id;
+  if (!identityId) return null;
+  const mem = await prisma.staffMembership.findFirst({
+    where: {
+      identityId,
+      ...(washerId ? { washerId } : {}),
+      status: 'active'
+    }
+  });
+  return mem?.id || null;
+}
+
+function _formatOrderForDriver(order) {
+  if (!order) return order;
+  const identity = order.customerMembership?.identity;
+  return {
+    ...order,
+    customer: {
+      id: identity?.id || order.customerMembershipId,
+      name: identity?.name || order.customerMembership?.displayName || 'عميل',
+      phone: identity?.phone || '',
+    },
+    pickupAddress: order.pickupAddressText,
+    deliveryAddress: order.deliveryAddressText,
+  };
+}
+
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
 
 /** طلبات مرتبطة بالموصل في مرحلة الاستلام من العميل */
 const DRIVER_ACTIVE_PICKUP_STATUSES = [
   'pickup_assigned',
-  'picked_up',
   'driver_heading_to_pickup',
   'driver_arrived_pickup',
+  'delivered_to_laundry',
 ];
 
 /** طلبات مرتبطة بالموصل في مرحلة التسليم للعميل (بعد المغسلة) */
 const DRIVER_ACTIVE_DELIVERY_STATUSES = [
-  'washing',
-  'ready',
   'ready_for_delivery',
   'delivery_assigned',
   'driver_heading_to_delivery',
   'driver_arrived_delivery',
-  'delivering',
   'delivered',
 ];
 
@@ -33,7 +65,8 @@ const DRIVER_ACTIVE_ALL_STATUSES = [
 ];
 
 const DriversService = {
-  async activeOrders(driverId, opts = {}) {
+  async activeOrders(driverIdentifier, opts = {}) {
+    const driverIds = Array.isArray(driverIdentifier) ? driverIdentifier : [driverIdentifier].filter(Boolean);
     const limitRaw = Number(opts.limit ?? DEFAULT_LIMIT);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), MAX_LIMIT) : DEFAULT_LIMIT;
     const afterId = opts.afterId ? String(opts.afterId).trim() : null;
@@ -49,30 +82,40 @@ const DriversService = {
 
     const rows = await prisma.order.findMany({
       where: {
-        driverStaffMembershipId: driverId,
+        driverStaffMembershipId: { in: driverIds },
         status: {
           in: statusIn,
         },
       },
-      include: { items: true, payments: true, customer: true },
+      include: {
+        items: true,
+        payments: true,
+        customerMembership: { include: { identity: true } }
+      },
       orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
       take: limit + 1,
       ...(afterId ? { cursor: { id: afterId }, skip: 1 } : {})
     });
 
     const hasMore = rows.length > limit;
-    const items = hasMore ? rows.slice(0, limit) : rows;
+    const rawItems = hasMore ? rows.slice(0, limit) : rows;
+    const items = rawItems.map(_formatOrderForDriver);
     const nextCursor = hasMore && items.length ? items[items.length - 1]?.id ?? null : null;
     return { items, nextCursor };
   },
 
-  async deliveryCart(driverId) {
+  async deliveryCart(driverIdentifier) {
+    const driverIds = Array.isArray(driverIdentifier) ? driverIdentifier : [driverIdentifier].filter(Boolean);
     const orders = await prisma.order.findMany({
       where: {
-        driverStaffMembershipId: driverId,
-        status: { in: ['picked_up', 'delivering', 'delivery_assigned', 'driver_heading_to_delivery', 'driver_arrived_delivery'] }
+        driverStaffMembershipId: { in: driverIds },
+        status: { in: ['delivery_assigned', 'driver_heading_to_delivery', 'driver_arrived_delivery'] }
       },
-      include: { items: true, payments: { orderBy: { createdAt: 'desc' }, take: 1 }, customer: true },
+      include: {
+        items: true,
+        payments: { orderBy: { createdAt: 'desc' }, take: 1 },
+        customerMembership: { include: { identity: true } }
+      },
       orderBy: { updatedAt: 'desc' }
     });
     return orders.map(order => ({
@@ -89,8 +132,7 @@ const DriversService = {
 
   /** Open pickup tasks + legacy orders. Pagination: limit (default 10), afterId. */
   async availablePickup(user, opts = {}) {
-    const canDrive = (user.role === 'driver' || user.role === 'washer_admin' || user.role === 'worker') && user.washerId;
-    if (!canDrive) throw new ApiError(403, 'forbidden', 'Forbidden');
+    if (!_canDrive(user)) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const limitRaw = Number(opts.limit ?? DEFAULT_LIMIT);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), MAX_LIMIT) : DEFAULT_LIMIT;
@@ -103,19 +145,29 @@ const DriversService = {
           status: 'open',
           order: {
             washerId: user.washerId,
-            status: { in: ['accepted', 'pending_pickup'] }
+            status: { in: ['pending_pickup'] }
           }
         },
-        include: { order: { include: { customer: true, items: true } } },
+        include: {
+          order: {
+            include: {
+              items: true,
+              customerMembership: { include: { identity: true } }
+            }
+          }
+        },
         orderBy: { createdAt: 'asc' }
       }),
       prisma.order.findMany({
         where: {
           washerId: user.washerId,
           driverStaffMembershipId: null,
-          status: { in: ['accepted', 'pending_pickup'] }
+          status: { in: ['pending_pickup'] }
         },
-        include: { customer: true, items: true },
+        include: {
+          items: true,
+          customerMembership: { include: { identity: true } }
+        },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         take: 100
       })
@@ -134,7 +186,8 @@ const DriversService = {
     }
     const slice = all.slice(start, start + limit + 1);
     const hasMore = slice.length > limit;
-    const items = hasMore ? slice.slice(0, limit) : slice;
+    const rawItems = hasMore ? slice.slice(0, limit) : slice;
+    const items = rawItems.map(_formatOrderForDriver);
     const nextCursor = hasMore && items.length ? items[items.length - 1]?.id ?? null : null;
     return { items, nextCursor };
   },
@@ -170,8 +223,7 @@ const DriversService = {
 
   /** Atomic claim of a pickup task. Only one driver can claim. */
   async claimPickupTask(user, taskId) {
-    const canDrive = (user.role === 'driver' || user.role === 'washer_admin' || user.role === 'worker') && user.washerId;
-    if (!canDrive) throw new ApiError(403, 'forbidden', 'Forbidden');
+    if (!_canDrive(user)) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const task = await prisma.driverTask.findUnique({
       where: { id: taskId },
@@ -182,14 +234,16 @@ const DriversService = {
     if (task.status !== 'open') throw new ApiError(400, 'Task already claimed');
     if (task.order.washerId !== user.washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
 
+    const driverMembershipId = await _resolveDriverStaffMembershipId(user, task.order.washerId);
+
     const updated = await prisma.$transaction(async (tx) => {
       await tx.driverTask.update({
         where: { id: taskId },
-        data: { status: 'assigned', assignedDriverId: user.staffMembershipId || user.userId, acceptedAt: new Date() }
+        data: { status: 'assigned', assignedDriverId: driverMembershipId || null, acceptedAt: new Date() }
       });
       const order = await tx.order.update({
         where: { id: task.orderId },
-        data: { driverStaffMembershipId: user.staffMembershipId || user.userId, status: 'pickup_assigned' }
+        data: { driverStaffMembershipId: driverMembershipId || user.staffMembershipId || user.userId, status: 'pickup_assigned' }
       });
       await tx.orderEvent.create({
         data: { orderId: order.id, to: 'pickup_assigned', byUserId: user.userId, note: 'driver_claimed_pickup' }
@@ -242,14 +296,13 @@ const DriversService = {
 
   /** طلبات التوصيل المتاحة. Pagination: limit (default 10), afterId. */
   async availableDelivery(user, opts = {}) {
-    const canDrive = (user.role === 'driver' || user.role === 'washer_admin' || user.role === 'worker') && user.washerId;
-    if (!canDrive) throw new ApiError(403, 'forbidden', 'Forbidden');
+    if (!_canDrive(user)) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const limitRaw = Number(opts.limit ?? DEFAULT_LIMIT);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), MAX_LIMIT) : DEFAULT_LIMIT;
     const afterId = opts.afterId ? String(opts.afterId).trim() : null;
 
-    const deliveryStatuses = ['washing', 'ready', 'ready_for_delivery'];
+    const deliveryStatuses = ['ready_for_delivery'];
 
     const [tasks, fallbackOrders] = await Promise.all([
       prisma.driverTask.findMany({
@@ -262,7 +315,14 @@ const DriversService = {
             status: { in: deliveryStatuses }
           }
         },
-        include: { order: { include: { customer: true, items: true } } },
+        include: {
+          order: {
+            include: {
+              items: true,
+              customerMembership: { include: { identity: true } }
+            }
+          }
+        },
         orderBy: { createdAt: 'asc' }
       }),
       prisma.order.findMany({
@@ -271,7 +331,10 @@ const DriversService = {
           driverStaffMembershipId: null,
           status: { in: deliveryStatuses }
         },
-        include: { customer: true, items: true },
+        include: {
+          items: true,
+          customerMembership: { include: { identity: true } }
+        },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         take: 100
       })
@@ -289,15 +352,15 @@ const DriversService = {
     }
     const slice = all.slice(start, start + limit + 1);
     const hasMore = slice.length > limit;
-    const items = hasMore ? slice.slice(0, limit) : slice;
+    const rawItems = hasMore ? slice.slice(0, limit) : slice;
+    const items = rawItems.map(_formatOrderForDriver);
     const nextCursor = hasMore && items.length ? items[items.length - 1]?.id ?? null : null;
     return { items, nextCursor };
   },
 
   /** Atomic claim of a delivery task. */
   async claimDeliveryTask(user, taskId) {
-    const canDrive = (user.role === 'driver' || user.role === 'washer_admin' || user.role === 'worker') && user.washerId;
-    if (!canDrive) throw new ApiError(403, 'forbidden', 'Forbidden');
+    if (!_canDrive(user)) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const task = await prisma.driverTask.findUnique({
       where: { id: taskId },
@@ -308,14 +371,16 @@ const DriversService = {
     if (task.status !== 'open') throw new ApiError(400, 'Task already claimed');
     if (task.order.washerId !== user.washerId) throw new ApiError(403, 'forbidden', 'Forbidden');
 
+    const driverMembershipId = await _resolveDriverStaffMembershipId(user, task.order.washerId);
+
     const updated = await prisma.$transaction(async (tx) => {
       await tx.driverTask.update({
         where: { id: taskId },
-        data: { status: 'assigned', assignedDriverId: user.staffMembershipId || user.userId, acceptedAt: new Date() }
+        data: { status: 'assigned', assignedDriverId: driverMembershipId || null, acceptedAt: new Date() }
       });
       await tx.order.update({
         where: { id: task.orderId },
-        data: { driverStaffMembershipId: user.staffMembershipId || user.userId, status: 'delivery_assigned' }
+        data: { driverStaffMembershipId: driverMembershipId || user.staffMembershipId || user.userId, status: 'delivery_assigned' }
       });
 
       await RealtimeOutboxService.safeCreateEvent(tx, {
@@ -356,8 +421,7 @@ const DriversService = {
 
   /** استلام مهمة توصيل بالطلب (للاستخدام من الواجهة بدون معرف المهمة). */
   async claimDeliveryByOrderId(user, orderId) {
-    const canDrive = (user.role === 'driver' || user.role === 'washer_admin' || user.role === 'worker') && user.washerId;
-    if (!canDrive) throw new ApiError(403, 'forbidden', 'Forbidden');
+    if (!_canDrive(user)) throw new ApiError(403, 'forbidden', 'Forbidden');
 
     const openTask = await prisma.driverTask.findFirst({
       where: { orderId, taskType: 'delivery', status: 'open' },
@@ -367,17 +431,17 @@ const DriversService = {
       const order = await prisma.order.findFirst({ where: { id: orderId, washerId: user.washerId } });
       if (!order) throw new ApiError(404, 'Order not found');
       if (order.driverStaffMembershipId) throw new ApiError(400, 'Task already claimed');
-      if (!['washing', 'ready', 'ready_for_delivery'].includes(order.status)) {
+      if (!['ready_for_delivery'].includes(order.status)) {
         throw new ApiError(400, 'Order not ready for delivery');
       }
 
-      // عند الإسناد الأولي: نربط الطلب بالسائق فقط، بدون تغيير الحالة إذا كانت ما زالت "جاري الغسيل"
-      const newStatus = order.status === 'washing' ? 'washing' : order.status;
+      const newStatus = 'delivery_assigned';
+      const driverMembershipId = await _resolveDriverStaffMembershipId(user, user.washerId);
 
       await prisma.$transaction(async (tx) => {
         await tx.order.update({
           where: { id: orderId },
-          data: { driverStaffMembershipId: user.staffMembershipId || user.userId, status: newStatus }
+          data: { driverStaffMembershipId: driverMembershipId || user.staffMembershipId || user.userId, status: newStatus }
         });
 
         await RealtimeOutboxService.safeCreateEvent(tx, {

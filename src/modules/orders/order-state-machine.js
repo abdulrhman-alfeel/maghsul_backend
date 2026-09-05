@@ -39,6 +39,7 @@ export const ALLOWED_TRANSITIONS = Object.freeze({
   [ORDER_STATUSES.PENDING_PICKUP]: [
     ORDER_STATUSES.PICKUP_ASSIGNED,
     ORDER_STATUSES.DRIVER_HEADING_TO_PICKUP,
+    ORDER_STATUSES.DRIVER_ARRIVED_PICKUP,
     ORDER_STATUSES.DELIVERED_TO_LAUNDRY,
     ORDER_STATUSES.RECEIVED_IN_LAUNDRY,
     ORDER_STATUSES.CANCELLED
@@ -219,8 +220,8 @@ export function assertOrderTransition({
       throw new ApiError(403, 'forbidden', 'Only staff or drivers can execute driver transitions');
     }
     // Driver assignment validation: driver must match if driverStaffMembershipId is already set
-    const effectiveDriverId = actorContext.staffMembershipId || actorContext.userId;
-    if (order.driverStaffMembershipId && order.driverStaffMembershipId !== effectiveDriverId && role === 'driver') {
+    const allowedDriverIds = [actorContext.staffMembershipId, actorContext.userId, actorContext.id].filter(Boolean);
+    if (order.driverStaffMembershipId && !allowedDriverIds.includes(order.driverStaffMembershipId) && role === 'driver') {
       throw new ApiError(403, 'forbidden', 'Order is assigned to another driver');
     }
   }

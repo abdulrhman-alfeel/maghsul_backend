@@ -97,27 +97,40 @@ const StaffController = {
         washerId: ctx.washerId,
         branchId: ctx.branchId,
         staffMembershipId: ctx.staffMembershipId,
-        // Removed hardcoded application bounds. Canonical scope is now inherited and revalidated by SessionService.
       });
 
       return ok(res, {
         sessionType: 'operational',
         accessToken: result.accessToken,
         refreshToken: result.refreshToken,
-        identity: { id: identity.id, name: identity.name }
+        identity: { id: identity.id, name: identity.name },
+        availableContexts: [ctx],
+        activeContext: ctx,
+        user: {
+          id: identity.id,
+          phone: identity.phone,
+          name: identity.name,
+          role: ctx.role,
+          washerId: ctx.washerId,
+          branchId: ctx.branchId,
+          staffMembershipId: ctx.staffMembershipId
+        }
       }, 'تم تسجيل الدخول بنجاح');
     }
 
     // Multiple contexts → provisional session + context list
-    const result = await SessionService.createProvisionalSession(identity.id, {
-      // Removed hardcoded application bounds. Canonical scope is now inherited and revalidated by SessionService.
-    });
+    const result = await SessionService.createProvisionalSession(identity.id, {});
 
     return ok(res, {
       sessionType: 'provisional',
       accessToken: result.accessToken,
       availableContexts,
-      identity: { id: identity.id, name: identity.name }
+      identity: { id: identity.id, name: identity.name },
+      user: {
+        id: identity.id,
+        phone: identity.phone,
+        name: identity.name,
+      }
     }, 'يرجى اختيار السياق المناسب');
   },
 
@@ -172,6 +185,33 @@ const StaffController = {
       accessToken: result.accessToken,
       refreshToken: result.refreshToken
     }, 'تم تبديل السياق بنجاح');
+  },
+
+  /**
+   * GET /api/auth/staff/contexts
+   *
+   * Fetches all available staff contexts (washers and branches) for the authenticated staff member.
+   */
+  async getContexts(req, res) {
+    const identityId = req.authContext?.identityId || req.user?.id || req.user?.userId;
+    if (!identityId) {
+      throw new ApiError(401, 'UNAUTHORIZED', 'Missing user identity');
+    }
+
+    const memberships = await prisma.staffMembership.findMany({
+      where: { identityId, status: 'active' },
+      include: {
+        washer: { select: { id: true, name: true, status: true } },
+        branchAccesses: {
+          include: {
+            branch: { select: { id: true, name: true, status: true } }
+          }
+        }
+      }
+    });
+
+    const availableContexts = await _buildStaffContexts(memberships);
+    return ok(res, { availableContexts }, 'Available staff contexts');
   }
 };
 
@@ -191,10 +231,26 @@ async function _buildStaffContexts(memberships) {
 
     if (membership.hasFullWasherAccess) {
       // All active branches under this washer
-      const activeBranches = await prisma.branch.findMany({
+      let activeBranches = await prisma.branch.findMany({
         where: { washerId: membership.washerId, status: 'active' },
         select: { id: true, name: true }
       });
+
+      // إذا لم يكن لدى المغسلة أي فرع، يتم إنشاء الفرع الرئيسي تلقائياً
+      if (activeBranches.length === 0) {
+        const defaultBranch = await prisma.branch.create({
+          data: {
+            name: 'الفرع الرئيسي',
+            washerId: membership.washerId,
+            status: 'active',
+            isOpen: true,
+            acceptingOrders: true,
+          },
+          select: { id: true, name: true }
+        });
+        activeBranches = [defaultBranch];
+      }
+
       for (const branch of activeBranches) {
         contexts.push({
           staffMembershipId: membership.id,

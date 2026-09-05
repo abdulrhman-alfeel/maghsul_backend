@@ -7,11 +7,13 @@ const DriversController = {
     const limit = req.query.limit != null ? req.query.limit : 10;
     const afterId = req.query.afterId != null ? req.query.afterId : undefined;
     const phase = req.query.phase != null ? String(req.query.phase) : undefined;
-    return ok(res, await DriversService.activeOrders(req.user.userId, { limit, afterId, phase }), 'Active deliveries');
+    const driverIds = [req.user.staffMembershipId, req.user.userId, req.user.id].filter(Boolean);
+    return ok(res, await DriversService.activeOrders(driverIds, { limit, afterId, phase }), 'Active deliveries');
   },
 
   async cart(req, res) {
-    return ok(res, await DriversService.deliveryCart(req.user.userId), 'Driver cart');
+    const driverIds = [req.user.staffMembershipId, req.user.userId, req.user.id].filter(Boolean);
+    return ok(res, await DriversService.deliveryCart(driverIds), 'Driver cart');
   },
 
   async availablePickup(req, res) {

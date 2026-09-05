@@ -21,10 +21,6 @@ export const CanonicalSessionContextService = {
       throw new ApiError(401, 'SESSION_NOT_FOUND', 'Session does not exist');
     }
 
-    if (!session.device) {
-      throw new ApiError(401, 'DEVICE_NOT_FOUND', 'Session device not found');
-    }
-
     const state = await SessionService.getSessionState(session.id);
     if (state === 'revoked' || session.isRevoked) {
       throw new ApiError(401, 'SESSION_REVOKED', 'الجلسة ملغاة');
@@ -41,8 +37,9 @@ export const CanonicalSessionContextService = {
       throw new ApiError(401, 'TOKEN_SESSION_MISMATCH', 'Token session type does not match session');
     }
 
-    // ApplicationRegistry revalidation
-    const appScope = await validateApplicationScope(session.device.applicationId, session.device.appType);
+    const resolvedWasherId = session.washerId || null;
+    const resolvedAppId = session.device?.applicationId || resolvedWasherId || 'customer';
+    const resolvedAppType = session.device?.appType || 'customer';
 
     const identity = await prisma.identity.findUnique({ where: { id: session.identityId } });
     if (!identity || identity.status !== 'active') {
@@ -52,15 +49,16 @@ export const CanonicalSessionContextService = {
     const publicAuthContext = Object.freeze({
       identityId: session.identityId,
       sessionId: session.id,
-      applicationId: session.device.applicationId,
-      appType: session.device.appType
+      applicationId: resolvedAppId,
+      appType: resolvedAppType,
+      washerId: resolvedWasherId
     });
 
     const internalState = Object.freeze({
       session: session,
-      device: session.device,
+      device: session.device || null,
       identity: identity,
-      washerId: appScope.washerId
+      washerId: resolvedWasherId
     });
 
     return { publicAuthContext, internalState };

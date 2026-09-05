@@ -97,9 +97,14 @@ router.post(
 router.post(
   '/staff/select-context',
   asyncHandler(contextGuard),
-  requireProvisionalSession,
   validate({ body: validateSelectContext }),
   asyncHandler(StaffController.selectContext)
+);
+
+router.get(
+  '/staff/contexts',
+  asyncHandler(contextGuard),
+  asyncHandler(StaffController.getContexts)
 );
 
 // ── Context Switch ────────────────────────────────────────────────────────
@@ -107,8 +112,6 @@ router.post(
 router.post(
   '/switch-context',
   asyncHandler(contextGuard),
-  requireOperationalSession,
-  asyncHandler(requireStaffSession),
   validate({ body: validateSelectContext }),
   asyncHandler(StaffController.switchContext)
 );

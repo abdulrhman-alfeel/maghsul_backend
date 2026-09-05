@@ -24,6 +24,14 @@ const WashersController = {
     return ok(res, await WashersService.replaceBranchCoverage(req.authContext, req.params.branchId, req.body.zones || []), 'Branch coverage zones replaced');
   },
 
+  async saveBranchNeighborhoodCoverage(req, res) {
+    return ok(
+      res,
+      await WashersService.saveBranchNeighborhoodCoverage(req.authContext, req.params.branchId, req.body),
+      'Branch neighborhood coverage saved'
+    );
+  },
+
   async clearBranchCoverage(req, res) {
     return ok(res, await WashersService.clearBranchCoverage(req.authContext, req.params.branchId), 'Branch coverage zones cleared');
   },

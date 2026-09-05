@@ -13,14 +13,14 @@
  */
 
 import { Worker } from 'bullmq';
-import ioredis from '../config/redis.js';
+import { createWorkerRedisClient } from '../config/redis.js';
 import NotificationsService from '../modules/notifications/notifications.service.js';
 import logger from '../config/logger.js';
 
 const QUEUE_NAME = 'notifications';
-const connection = ioredis;
 
 let _worker = null;
+let _workerRedis = null;
 
 /**
  * Start the legacy notification worker.
@@ -28,6 +28,8 @@ let _worker = null;
  */
 export async function startLegacyNotificationWorker() {
   if (_worker) return;
+
+  _workerRedis = createWorkerRedisClient();
 
   _worker = new Worker(
     QUEUE_NAME,
@@ -41,7 +43,7 @@ export async function startLegacyNotificationWorker() {
       await NotificationsService.createAndSendNotification(input);
     },
     {
-      connection,
+      connection: _workerRedis,
       concurrency: 5,
     },
   );
@@ -74,5 +76,9 @@ export async function stopLegacyNotificationWorker() {
     await _worker.close();
     _worker = null;
     logger.info('BullMQ [legacy]: Notification worker stopped', { service: 'laundry-api' });
+  }
+  if (_workerRedis) {
+    await _workerRedis.quit().catch(() => {});
+    _workerRedis = null;
   }
 }

@@ -43,7 +43,7 @@ export const orderSchemas = {
       return result('pickup and delivery are required');
     }
     const forbiddenFields = [
-      'washerId', 'applicationId', 'appType', 'originApplicationId', 'originCustomerApplicationId',
+      'applicationId', 'appType', 'originApplicationId', 'originCustomerApplicationId',
       'customerApplicationId', 'identityId', 'customerId', 'customerMembershipId', 'sessionId'
     ];
     for (const field of forbiddenFields) {
@@ -93,6 +93,20 @@ export const washerSchemas = {
   },
   zonesBody: (data) => {
     if (!Array.isArray(data?.zones)) return result('zones must be an array');
+    return result(null, data);
+  },
+  neighborhoodCoverageBody: (data) => {
+    if (!data || typeof data !== 'object') return result('body is required');
+    if (!data.cityCode || typeof data.cityCode !== 'string') return result('cityCode is required (string)');
+    if (data.cityCode.trim().toLowerCase() !== 'riyadh') return result('cityCode must be riyadh');
+    if (!Array.isArray(data.districtCodes) || data.districtCodes.length === 0) {
+      return result('districtCodes must be a non-empty array of strings');
+    }
+    for (const code of data.districtCodes) {
+      if (typeof code !== 'string' || !code.trim()) {
+        return result('all districtCodes must be non-empty strings');
+      }
+    }
     return result(null, data);
   },
   locationBody: (data) => {

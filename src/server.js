@@ -104,11 +104,20 @@ export function unregisterSignalHandlers() {
   // We will not use process.removeAllListeners() to avoid interfering with other libs.
 }
 
+import { fileURLToPath } from 'url';
+import path from 'path';
+
 // Automatically start if this script is executed directly
-if (process.argv[1] === new URL(import.meta.url).pathname) {
+const isDirectRun = process.argv[1] && (
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) ||
+  process.argv[1] === new URL(import.meta.url).pathname
+);
+
+if (isDirectRun) {
   registerSignalHandlers();
   startInfrastructure().catch((err) => {
     logger.error('Failed to start infrastructure:', err);
     process.exitCode = 1;
   });
 }
+

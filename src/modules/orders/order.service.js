@@ -44,6 +44,8 @@ async function notifyDriver(order, notif) {
   const membership = await prisma.staffMembership.findUnique({ where: { id: order.driverStaffMembershipId } });
   if (membership) {
     await trySend({ userId: membership.identityId, orderId: order.id, role: 'driver', ...notif });
+  } else {
+    await trySend({ userId: order.driverStaffMembershipId, orderId: order.id, role: 'driver', ...notif });
   }
 }
 
@@ -145,8 +147,8 @@ const OrderService = {
     }
 
     // Washer validation from context
-    const canonicalWasherId = actorContext.washerId;
-    if (washerId && washerId !== canonicalWasherId) {
+    const canonicalWasherId = actorContext.washerId || washerId;
+    if (washerId && actorContext.washerId && washerId !== actorContext.washerId) {
       throw new ApiError(400, 'customer_application_washer_mismatch', 'Application cannot create order for this washer');
     }
 
@@ -652,9 +654,25 @@ const OrderService = {
     const order = await prisma.order.findUnique({ where: { id: orderId } });
     if (!order) throw new ApiError(404, 'Order not found');
 
+    // Translate any mobile UI aliases to valid Prisma OrderStatus enum values
+    let targetStatus = to;
+    if (to === 'picked_up') {
+      if (!order.driverStaffMembershipId || order.status === 'pending_pickup') {
+        targetStatus = 'pickup_assigned';
+      } else {
+        targetStatus = 'driver_arrived_pickup';
+      }
+    } else if (to === 'accepted') {
+      targetStatus = 'pickup_assigned';
+    } else if (to === 'delivering') {
+      targetStatus = 'driver_heading_to_delivery';
+    } else if (to === 'delivered_to_laundry') {
+      targetStatus = 'delivered_to_laundry';
+    }
+
     const transitionResult = assertOrderTransition({
       order,
-      targetStatus: to,
+      targetStatus,
       actorContext: user,
       actionName: 'update_driver_status'
     });
@@ -664,17 +682,49 @@ const OrderService = {
 
     let updated;
 
+    let driverStaffMembershipId = user.staffMembershipId;
+    if (!driverStaffMembershipId && (user.userId || user.id)) {
+      const membership = await prisma.staffMembership.findFirst({
+        where: {
+          identityId: user.userId || user.id,
+          washerId: order.washerId,
+          status: 'active'
+        }
+      });
+      if (membership) {
+        driverStaffMembershipId = membership.id;
+      } else {
+        const anyStaff = await prisma.staffMembership.findFirst({
+          where: {
+            identityId: user.userId || user.id,
+            status: 'active'
+          }
+        });
+        if (anyStaff) {
+          driverStaffMembershipId = anyStaff.id;
+        }
+      }
+    }
+
+    const allowedDriverIds = [driverStaffMembershipId, user.staffMembershipId, user.userId, user.id].filter(Boolean);
+
     await prisma.$transaction(async (tx) => {
       if (!order.driverStaffMembershipId) {
-        if (to !== 'picked_up') throw new ApiError(400, 'driver_must_pickup_first', 'Driver must pick up first');
-        if (order.status === 'pending_pickup' || order.status === 'accepted') {
+        if (targetStatus !== 'pickup_assigned' && targetStatus !== 'driver_arrived_pickup') {
+          throw new ApiError(400, 'driver_must_pickup_first', 'Driver must pick up first');
+        }
+        if (order.status === 'pending_pickup' || order.status === 'accepted' || order.status === 'pickup_assigned') {
           const openTask = await tx.driverTask.findFirst({
             where: { orderId, taskType: 'pickup', status: 'open' }
           });
           if (openTask) {
             await tx.driverTask.update({
               where: { id: openTask.id },
-              data: { status: 'assigned', assignedDriverId: user.userId, acceptedAt: new Date() }
+              data: {
+                status: 'assigned',
+                assignedDriverId: driverStaffMembershipId || user.staffMembershipId || null,
+                acceptedAt: new Date()
+              }
             });
 
             await RealtimeOutboxService.safeCreateEvent(tx, {
@@ -688,11 +738,15 @@ const OrderService = {
 
             updated = await tx.order.update({
               where: { id: orderId },
-              data: { driverStaffMembershipId: user.staffMembershipId || user.userId, status: to, events: { create: { from: order.status, to, byUserId: user.userId, note: note || 'claimed_and_picked_up' } } }
+              data: {
+                driverStaffMembershipId: driverStaffMembershipId || user.staffMembershipId || user.userId,
+                status: targetStatus,
+                events: { create: { from: order.status, to: targetStatus, byUserId: user.userId, note: note || 'claimed_by_driver' } }
+              }
             });
 
             await RealtimeOutboxService.safeCreateEvent(tx, {
-              eventKey: `order-status-updated-${orderId}-${to}-${Date.now()}`,
+              eventKey: `order-status-updated-${orderId}-${targetStatus}-${Date.now()}`,
               eventType: 'order.status_updated',
               eventKind: 'client_event',
               aggregateType: 'Order',
@@ -705,11 +759,15 @@ const OrderService = {
           // لا توجد مهمة مفتوحة: إسناد الطلب للسائق مباشرة (تدفق legacy)
           updated = await tx.order.update({
             where: { id: orderId },
-            data: { driverStaffMembershipId: user.staffMembershipId || user.userId, status: to, events: { create: { from: order.status, to, byUserId: user.userId, note: note || 'claimed_and_picked_up' } } }
+            data: {
+              driverStaffMembershipId: driverStaffMembershipId || user.staffMembershipId || user.userId,
+              status: targetStatus,
+              events: { create: { from: order.status, to: targetStatus, byUserId: user.userId, note: note || 'claimed_by_driver' } }
+            }
           });
 
           await RealtimeOutboxService.safeCreateEvent(tx, {
-            eventKey: `order-status-updated-${orderId}-${to}-${Date.now()}`,
+            eventKey: `order-status-updated-${orderId}-${targetStatus}-${Date.now()}`,
             eventType: 'order.status_updated',
             eventKind: 'client_event',
             aggregateType: 'Order',
@@ -719,22 +777,35 @@ const OrderService = {
 
           return;
         }
-      } else if (order.driverStaffMembershipId !== (user.staffMembershipId || user.userId)) {
+      } else if (!allowedDriverIds.includes(order.driverStaffMembershipId)) {
         throw new ApiError(403, 'forbidden', 'Forbidden');
       }
 
+      if (targetStatus === 'delivered_to_laundry') {
+        await tx.driverTask.updateMany({
+          where: { orderId, taskType: 'pickup', status: { in: ['open', 'assigned'] } },
+          data: { status: 'completed', completedAt: new Date() }
+        });
+      }
+
+      if (targetStatus === 'delivered' || targetStatus === 'completed') {
+        await tx.driverTask.updateMany({
+          where: { orderId, taskType: 'delivery', status: { in: ['open', 'assigned'] } },
+          data: { status: 'completed', completedAt: new Date() }
+        });
+      }
 
       updated = await tx.order.update({
         where: { id: orderId },
         data: {
-          status: to,
-          driverStaffMembershipId: order.driverStaffMembershipId || user.staffMembershipId || user.userId,
-          events: { create: { from: order.status, to, byUserId: user.userId, note: note || null } }
+          status: targetStatus,
+          driverStaffMembershipId: order.driverStaffMembershipId || driverStaffMembershipId || user.staffMembershipId || user.userId,
+          events: { create: { from: order.status, to: targetStatus, byUserId: user.userId, note: note || null } }
         }
       });
 
       await RealtimeOutboxService.safeCreateEvent(tx, {
-        eventKey: `order-status-updated-${orderId}-${to}-${Date.now()}`,
+        eventKey: `order-status-updated-${orderId}-${targetStatus}-${Date.now()}`,
         eventType: 'order.status_updated',
         eventKind: 'client_event',
         aggregateType: 'Order',

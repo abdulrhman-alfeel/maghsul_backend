@@ -1,0 +1,14 @@
+{
+  "dataset": "riyadh_neighborhoods_display",
+  "canonicalSource": "data/geo/riyadh_neighborhoods.geojson",
+  "toleranceMeters": 10,
+  "featureCount": 165,
+  "canonicalPoints": 43398,
+  "simplifiedPoints": 7524,
+  "pointReductionPercent": "82.7%",
+  "canonicalSizeBytes": 4204479,
+  "displaySizeBytes": 348819,
+  "sizeReductionPercent": "91.7%",
+  "sha256": "58bf319efeb6c113c49277d6f7f0946166d792a6aba8b6ebadf29736accec8a2",
+  "generatedAt": "2026-09-05T17:39:45.327Z"
+}

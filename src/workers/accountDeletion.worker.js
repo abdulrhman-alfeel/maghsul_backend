@@ -8,15 +8,16 @@
 
 import { Worker, Queue } from 'bullmq';
 import { randomBytes } from 'crypto';
-import ioredis from '../config/redis.js';
+import { createWorkerRedisClient } from '../config/redis.js';
 import prisma from '../config/db.js';
 import logger from '../config/logger.js';
 
 const QUEUE_NAME = 'accountDeletion';
-const connection = ioredis;
 
 let deletionQueue = null;
 let worker = null;
+let queueRedis = null;
+let workerRedis = null;
 
 /**
  * Standalone executor for account deletion cleanup.
@@ -130,7 +131,10 @@ async function scheduleCleanupJob() {
 export async function startAccountDeletionWorker() {
   if (worker || deletionQueue) return;
 
-  deletionQueue = new Queue(QUEUE_NAME, { connection });
+  queueRedis = createWorkerRedisClient();
+  workerRedis = createWorkerRedisClient();
+
+  deletionQueue = new Queue(QUEUE_NAME, { connection: queueRedis });
   await scheduleCleanupJob();
 
   worker = new Worker(
@@ -140,7 +144,7 @@ export async function startAccountDeletionWorker() {
       await executeAccountDeletionCleanup(new Date());
     },
     {
-      connection,
+      connection: workerRedis,
       concurrency: 1, // معالجة واحدة في كل مرة لضمان السلامة
     }
   );
@@ -162,6 +166,14 @@ export async function stopAccountDeletionWorker() {
   if (deletionQueue) {
     await deletionQueue.close();
     deletionQueue = null;
+  }
+  if (workerRedis) {
+    await workerRedis.quit().catch(() => {});
+    workerRedis = null;
+  }
+  if (queueRedis) {
+    await queueRedis.quit().catch(() => {});
+    queueRedis = null;
   }
 }
 
