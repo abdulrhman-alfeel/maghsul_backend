@@ -74,9 +74,14 @@ export const OtpService = {
       }
     }
 
-    // Invalidate old unverified OTPs
+    // Invalidate old unverified OTPs within the exact current scope
     await prisma.otpCode.updateMany({
-      where: { phone, purpose, verified: false },
+      where: {
+        phone,
+        purpose,
+        appClientId: appClientId ?? null,
+        verified: false
+      },
       data: { expiresAt: new Date() } // Expire immediately
     });
 
@@ -95,7 +100,6 @@ export const OtpService = {
         maxAttempts
       }
     });
-    console.log("code",code);
     const provider = getSmsProvider();
     await provider.sendSms(phone, `رمز الدخول الخاص بك: ${code}`);
 

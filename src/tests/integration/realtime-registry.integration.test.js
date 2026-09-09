@@ -252,7 +252,7 @@ describe('RT-2: Event Registry and Payload Security', () => {
       washerIds: ['was_fajr_001'],
       branchIds: ['br_001'],
       identityIds: ['ident_driver'],
-      appIdentities: [{ applicationId: 'fajr', identityId: 'ident_customer' }]
+      washerIdentities: [{ washerId: 'was_fajr_001', identityId: 'ident_customer' }]
     });
   });
 
@@ -264,8 +264,7 @@ describe('RT-2: Event Registry and Payload Security', () => {
           id: 'ord_123',
           washerId: 'was_fajr_001',
           branchId: 'br_001',
-          customerMembershipId: 'cm_123',
-          originCustomerApplicationId: 'fajr'
+          customerMembershipId: 'cm_123'
         })
       },
       customerMembership: {
@@ -287,7 +286,7 @@ describe('RT-2: Event Registry and Payload Security', () => {
       washerIds: ['was_fajr_001'],
       branchIds: ['br_001'],
       identityIds: [],
-      appIdentities: [{ applicationId: 'fajr', identityId: 'ident_customer' }]
+      washerIdentities: [{ washerId: 'was_fajr_001', identityId: 'ident_customer' }]
     });
   });
 
@@ -299,8 +298,7 @@ describe('RT-2: Event Registry and Payload Security', () => {
           id: 'ord_123',
           washerId: 'was_fajr_001',
           branchId: 'br_001',
-          customerMembershipId: 'cm_123',
-          originCustomerApplicationId: 'fajr'
+          customerMembershipId: 'cm_123'
         })
       },
       customerMembership: {
@@ -328,7 +326,7 @@ describe('RT-2: Event Registry and Payload Security', () => {
       washerIds: ['was_fajr_001'],
       branchIds: ['br_001'],
       identityIds: ['ident_driver'],
-      appIdentities: [{ applicationId: 'fajr', identityId: 'ident_customer' }]
+      washerIdentities: [{ washerId: 'was_fajr_001', identityId: 'ident_customer' }]
     });
   });
 });

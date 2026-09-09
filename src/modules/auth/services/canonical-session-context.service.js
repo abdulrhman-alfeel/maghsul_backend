@@ -2,7 +2,6 @@ import { TokenService } from './token.service.js';
 import { SessionService } from './session.service.js';
 import prisma from '../../../config/db.js';
 import ApiError from '../../../helpers/apiError.js';
-import { ApplicationRegistry, validateApplicationScope } from '../../../config/application.registry.js';
 
 export const CanonicalSessionContextService = {
   async resolveSessionContext(rawToken) {
@@ -46,13 +45,20 @@ export const CanonicalSessionContextService = {
       throw new ApiError(401, 'IDENTITY_INACTIVE', 'Identity is inactive or does not exist');
     }
 
-    const publicAuthContext = Object.freeze({
-      identityId: session.identityId,
-      sessionId: session.id,
-      applicationId: resolvedAppId,
-      appType: resolvedAppType,
-      washerId: resolvedWasherId
-    });
+    const publicAuthContext = Object.freeze(
+      resolvedAppType === 'customer'
+        ? {
+            identityId: session.identityId,
+            sessionId: session.id,
+            appType: 'customer'
+          }
+        : {
+            identityId: session.identityId,
+            sessionId: session.id,
+            applicationId: resolvedAppId,
+            appType: resolvedAppType
+          }
+    );
 
     const internalState = Object.freeze({
       session: session,

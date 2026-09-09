@@ -129,23 +129,43 @@ describe('Staff Auth — verifyOtp', () => {
     await createStaffMembership(identityOwner.id, washer1.id, null, { role: 'washer_owner', hasFullWasherAccess: true });
   });
 
-  test('6. hasFullWasherAccess with zero active branches -> ACTIVE_BRANCH_NOT_FOUND', async () => {
-    // Set branch2_1 to permanently_closed
-    await prisma.branch.update({ where: { id: branch2_1.id }, data: { status: 'permanently_closed' } });
-    // Remove washer1 membership
-    const ownerWasher1Mem = await prisma.staffMembership.findUnique({ where: { identityId_washerId: { identityId: identityOwner.id, washerId: washer1.id } } });
-    await prisma.staffMembership.delete({ where: { id: ownerWasher1Mem.id } });
+  test('6. hasFullWasherAccess with zero active branches -> provisions default branch and succeeds', async () => {
+    try {
+      // Set branch2_1 to permanently_closed
+      await prisma.branch.update({ where: { id: branch2_1.id }, data: { status: 'permanently_closed' } });
+      // Remove washer1 membership temporarily so owner only has washer2
+      await prisma.staffMembership.deleteMany({ where: { identityId: identityOwner.id, washerId: washer1.id } });
 
-    const code = await injectOtp('500000020');
-    const req = makeReq({ phone: '0500000020', code });
-    const next = jest.fn();
-    await StaffController.verifyOtp(req, makeRes(), next).catch(e => next(e));
+      const code = await injectOtp('500000020');
+      const req = makeReq({ phone: '0500000020', code });
+      const res = makeRes();
+      await StaffController.verifyOtp(req, res, jest.fn());
 
-    expect(next).toHaveBeenCalledWith(expect.objectContaining({ code: 'ACTIVE_BRANCH_NOT_FOUND' }));
+      expect(res._data.data.sessionType).toBe('operational');
+      const tokenPayload = TokenService.verifyAccessToken(res._data.data.accessToken, 'operational');
+      expect(tokenPayload.washerId).toBe(washer2.id);
+      expect(tokenPayload.branchId).toBeTruthy();
+    } finally {
+      // Restore
+      await prisma.branch.update({ where: { id: branch2_1.id }, data: { status: 'active' } });
+      await createStaffMembership(identityOwner.id, washer1.id, null, { role: 'washer_owner', hasFullWasherAccess: true });
+    }
+  });
 
-    // Restore
-    await prisma.branch.update({ where: { id: branch2_1.id }, data: { status: 'active' } });
-    await createStaffMembership(identityOwner.id, washer1.id, null, { role: 'washer_owner', hasFullWasherAccess: true });
+  test('6b. restricted worker with no active assigned branch -> ACTIVE_BRANCH_NOT_FOUND', async () => {
+    try {
+      // Worker only assigned to branch1_1; set branch1_1 to permanently_closed
+      await prisma.branch.update({ where: { id: branch1_1.id }, data: { status: 'permanently_closed' } });
+
+      const code = await injectOtp('500000021');
+      const req = makeReq({ phone: '0500000021', code });
+      const next = jest.fn();
+      await StaffController.verifyOtp(req, makeRes(), next).catch(e => next(e));
+
+      expect(next).toHaveBeenCalledWith(expect.objectContaining({ code: 'ACTIVE_BRANCH_NOT_FOUND' }));
+    } finally {
+      await prisma.branch.update({ where: { id: branch1_1.id }, data: { status: 'active' } });
+    }
   });
 });
 

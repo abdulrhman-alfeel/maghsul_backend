@@ -12,6 +12,7 @@ import { SocketRoomService } from '../../modules/realtime/socket-room.service.js
 import { createSocketContextResolver } from '../../modules/realtime/socket-context.resolver.js';
 import { socketAuthMiddleware } from '../../modules/realtime/socket-auth.middleware.js';
 import prisma from '../../config/db.js';
+import { setupTestDb, teardownTestDb, createTestWasher } from './test-utils.js';
 
 describe('Phase 3D-2B-2A: Multi-Node Real Redis Execution', () => {
   let pubClient, subClient;
@@ -19,15 +20,19 @@ describe('Phase 3D-2B-2A: Multi-Node Real Redis Execution', () => {
   let ioA, ioB;
   let clientCustomerA, clientCustomerB, clientStaffA;
   let portA, portB;
+  let washer;
 
   const identityId = 'ident_multi_test';
   const sessionIdA = 'sess_cust_a';
   const sessionIdB = 'sess_cust_b';
   const sessionIdStaff = 'sess_staff_a';
-  const applicationId = 'com.laundry.customer';
 
   beforeAll(async () => {
-    // 1. Setup Redis
+    await setupTestDb();
+    const w = await createTestWasher({ name: 'Multi-Node Washer' });
+    washer = w.washer;
+
+    // 1. Setup Redis for Adapter
     pubClient = new Redis(process.env.REDIS_URL_TEST || 'redis://localhost:6380');
     subClient = pubClient.duplicate();
 
@@ -41,8 +46,9 @@ describe('Phase 3D-2B-2A: Multi-Node Real Redis Execution', () => {
       io.of('/realtime').use(socketAuthMiddleware);
       io.of('/realtime').use(async (socket, next) => {
         try {
-          const rawAccessToken = socket.handshake.auth.accessToken;
-          const context = await resolver(rawAccessToken);
+          const rawAccessToken = socket.data?.rawAccessToken || socket.handshake.auth.accessToken;
+          const requestedWasherId = socket.data?.requestedWasherId || socket.handshake.auth.washerId;
+          const context = await resolver(rawAccessToken, requestedWasherId);
           socket.data.context = context;
           next();
         } catch (err) {
@@ -76,32 +82,42 @@ describe('Phase 3D-2B-2A: Multi-Node Real Redis Execution', () => {
 
     ioA?.close();
     ioB?.close();
+
+    if (serverA) await new Promise(r => serverA.close(r));
+    if (serverB) await new Promise(r => serverB.close(r));
     
     await pubClient?.quit();
     await subClient?.quit();
+
+    await teardownTestDb();
   });
 
   it('1. Connects sockets to different nodes and verifies multi-node isolation', async () => {
-    const tokenCustA = TokenService.signAccessToken({ sessionId: sessionIdA, identityId, sessionType: 'operational', applicationId: 'com.laundry.customer', appType: 'customer' }, '1h');
-    const tokenCustB = TokenService.signAccessToken({ sessionId: sessionIdB, identityId, sessionType: 'operational', applicationId: 'com.laundry.customer', appType: 'customer' }, '1h');
-    const tokenStaff = TokenService.signAccessToken({ sessionId: sessionIdStaff, identityId, sessionType: 'operational', branchId: 'b1', washerId: 'w1', applicationId: 'com.staff', appType: 'dashboard' }, '1h');
+    const tokenCustA = TokenService.signAccessToken({ sessionId: sessionIdA, identityId, sessionType: 'operational', appType: 'customer' }, '1h');
+    const tokenCustB = TokenService.signAccessToken({ sessionId: sessionIdB, identityId, sessionType: 'operational', appType: 'customer' }, '1h');
+    const tokenStaff = TokenService.signAccessToken({ sessionId: sessionIdStaff, identityId, sessionType: 'operational', branchId: 'b1', washerId: washer.id, applicationId: 'com.staff', appType: 'dashboard' }, '1h');
 
-    // Setup dummy session data
+    // Setup DB fixtures
     await prisma.session.deleteMany({ where: { identityId } });
+    await prisma.customerMembership.deleteMany({ where: { identityId } });
     await prisma.userDevice.deleteMany({ where: { identityId } });
     await prisma.identity.deleteMany({ where: { id: identityId } });
     
-    await prisma.identity.create({ data: { id: identityId, phone: '+966500000000' } });
-    const dev1 = await prisma.userDevice.create({ data: { identityId, installationId: 'i1', platform: 'ios', appType: 'customer', applicationId } });
-    const dev2 = await prisma.userDevice.create({ data: { identityId, installationId: 'i2', platform: 'ios', appType: 'customer', applicationId } });
+    await prisma.identity.create({ data: { id: identityId, phone: '+966500000000', status: 'active' } });
+    await prisma.customerMembership.create({
+      data: { identityId, washerId: washer.id, status: 'active' }
+    });
+
+    const dev1 = await prisma.userDevice.create({ data: { identityId, installationId: 'i1', platform: 'ios', appType: 'customer', applicationId: 'com.laundry.customer' } });
+    const dev2 = await prisma.userDevice.create({ data: { identityId, installationId: 'i2', platform: 'ios', appType: 'customer', applicationId: 'com.laundry.customer' } });
     const dev3 = await prisma.userDevice.create({ data: { identityId, installationId: 'i3', platform: 'ios', appType: 'dashboard', applicationId: 'com.staff' } });
     
     await prisma.session.create({ data: { id: sessionIdA, identityId, sessionType: 'operational', expiresAt: new Date(Date.now()+3600000), userDeviceId: dev1.id } });
     await prisma.session.create({ data: { id: sessionIdB, identityId, sessionType: 'operational', expiresAt: new Date(Date.now()+3600000), userDeviceId: dev2.id } });
-    await prisma.session.create({ data: { id: sessionIdStaff, identityId, sessionType: 'operational', expiresAt: new Date(Date.now()+3600000), userDeviceId: dev3.id, washerId: 'w1', branchId: 'b1' } });
+    await prisma.session.create({ data: { id: sessionIdStaff, identityId, sessionType: 'operational', expiresAt: new Date(Date.now()+3600000), userDeviceId: dev3.id, washerId: washer.id, branchId: 'b1' } });
 
-    clientCustomerA = Client(`ws://localhost:${portA}/realtime`, { transports: ['websocket'], auth: { accessToken: tokenCustA } });
-    clientCustomerB = Client(`ws://localhost:${portB}/realtime`, { transports: ['websocket'], auth: { accessToken: tokenCustB } });
+    clientCustomerA = Client(`ws://localhost:${portA}/realtime`, { transports: ['websocket'], auth: { accessToken: tokenCustA, washerId: washer.id } });
+    clientCustomerB = Client(`ws://localhost:${portB}/realtime`, { transports: ['websocket'], auth: { accessToken: tokenCustB, washerId: washer.id } });
     clientStaffA = Client(`ws://localhost:${portA}/realtime`, { transports: ['websocket'], auth: { accessToken: tokenStaff } });
 
     await Promise.all([
@@ -119,7 +135,7 @@ describe('Phase 3D-2B-2A: Multi-Node Real Redis Execution', () => {
     clientCustomerB.on('customer_event', custEventReceivedB);
     clientStaffA.on('customer_event', custEventReceivedStaff);
 
-    const targetCustomerRoom = SocketRoomFactory.buildAppIdentityRoom(applicationId, identityId);
+    const targetCustomerRoom = SocketRoomFactory.buildAppIdentityRoom(washer.id, identityId);
     
     // Server A emits to customer room
     ioA.of('/realtime').to(targetCustomerRoom).emit('customer_event', { payload: 'hello' });
@@ -184,7 +200,6 @@ describe('Redis Degradation and Recovery', () => {
   let supertest;
 
   beforeAll(async () => {
-    // We dynamically import these to avoid interfering with global state from the first test
     const infra = await import('../../modules/realtime/socket-infrastructure.js');
     const redisConn = await import('../../modules/realtime/socket-redis.connection.js');
     const appModule = await import('../../app.js');
@@ -201,16 +216,18 @@ describe('Redis Degradation and Recovery', () => {
 
   afterAll(async () => {
     if (mainServer) {
-      mainServer.close();
+      await new Promise(r => mainServer.close(r));
     }
     await stopSocketInfrastructure();
+    await teardownTestDb();
   });
 
   it('2. Should handle Redis Degradation, keep REST healthy, and recover', async () => {
     // 1. Start Main Server (Server A) with full infrastructure
     mainServer = http.createServer(mainApp);
-    const infra = await import('../../modules/realtime/socket-infrastructure.js');
-    const realtimeApp = await import('../../modules/realtime/realtime-application.js'); process.env.REALTIME_V2_ENABLED = 'true'; await realtimeApp.startRealtimeApplication({ httpServer: mainServer });
+    const realtimeApp = await import('../../modules/realtime/realtime-application.js');
+    process.env.REALTIME_V2_ENABLED = 'true';
+    await realtimeApp.startRealtimeApplication({ httpServer: mainServer });
     
     await new Promise(res => mainServer.listen(0, res));
 
@@ -252,14 +269,12 @@ describe('Redis Degradation and Recovery', () => {
 
     const RealtimePublisher = (await import('../../modules/realtime/realtime-publisher.js')).RealtimePublisher;
     
-    // We skip the DB step and just call emitClientEvent to see what it returns
     const event = { eventId: 'test-event-1', eventType: 'test', eventVersion: 1, occurredAt: new Date() };
     const rooms = ['test_room'];
     const payload = { hello: 'world' };
     
     const result = RealtimePublisher.emitClientEvent(event, rooms, payload);
     
-    // Outcome should be retryable_unavailable when degraded
     expect(result.outcome).toBe('retryable_unavailable');
     expect(result.reasonCode).toBe('realtime_infrastructure_unavailable');
 

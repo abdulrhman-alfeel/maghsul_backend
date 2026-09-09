@@ -67,17 +67,26 @@ describe('Phase 3D-2B-2B-1A: Payment Isolation by Washer Scope', () => {
   });
 
   it('Fajr customer can fetch Fajr payment invoice', async () => {
-    const res = await request(app).get(`/api/orders/${fajrOrder.id}/invoice`).set('Authorization', `Bearer ${fajrToken}`);
+    const res = await request(app)
+      .get(`/api/orders/${fajrOrder.id}/invoice`)
+      .set('Authorization', `Bearer ${fajrToken}`)
+      .set('X-Washer-Id', washerFajr.id);
     expect(res.status).toBe(200);
   });
 
   it('Fajr customer cannot fetch Lamaa payment invoice', async () => {
-    const res = await request(app).get(`/api/orders/${lamaaOrder.id}/invoice`).set('Authorization', `Bearer ${fajrToken}`);
+    const res = await request(app)
+      .get(`/api/orders/${lamaaOrder.id}/invoice`)
+      .set('Authorization', `Bearer ${fajrToken}`)
+      .set('X-Washer-Id', washerFajr.id);
     expect(res.status).toBe(403);
   });
 
   it('Lamaa customer cannot switch Fajr order payment to COD', async () => {
-    const res = await request(app).post(`/api/payments/order/${fajrOrder.id}/switch-to-cod`).set('Authorization', `Bearer ${lamaaToken}`);
+    const res = await request(app)
+      .post(`/api/payments/order/${fajrOrder.id}/switch-to-cod`)
+      .set('Authorization', `Bearer ${lamaaToken}`)
+      .set('X-Washer-Id', washerLamaa.id);
     expect(res.status).toBe(403);
   });
 });

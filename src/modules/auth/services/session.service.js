@@ -23,25 +23,36 @@ export const SessionService = {
    */
   async createProvisionalSession(identityId, context = {}, userDeviceId = null) {
     const safeContext = context || {};
+    const isCustomer = (safeContext.appType === 'customer');
     const ttlMin = Number(process.env.PROVISIONAL_TOKEN_TTL_MINUTES || 15);
     const session = await prisma.session.create({
       data: {
         identityId,
         userDeviceId,
         sessionType: 'provisional',
-        washerId: safeContext.washerId || null,
+        washerId: isCustomer ? null : (safeContext.washerId || null),
         expiresAt: new Date(Date.now() + ttlMin * 60 * 1000)
       }
     });
 
-    const accessToken = TokenService.signAccessToken({
-      sessionId: session.id,
-      identityId: session.identityId,
-      sessionType: 'provisional',
-      washerId: session.washerId,
-      applicationId: safeContext.applicationId || null,
-      appType: safeContext.appType || null,
-    }, `${ttlMin}m`);
+    const accessToken = TokenService.signAccessToken(
+      isCustomer
+        ? {
+            sessionId: session.id,
+            identityId: session.identityId,
+            sessionType: 'provisional',
+            appType: 'customer'
+          }
+        : {
+            sessionId: session.id,
+            identityId: session.identityId,
+            sessionType: 'provisional',
+            washerId: session.washerId,
+            applicationId: safeContext.applicationId || null,
+            appType: safeContext.appType || null,
+          },
+      `${ttlMin}m`
+    );
 
     return { session, accessToken };
   },
@@ -51,6 +62,7 @@ export const SessionService = {
    */
   async createOperationalSession(identityId, context = {}, userDeviceId = null) {
     const safeContext = context || {};
+    const isCustomer = (safeContext.appType === 'customer');
     const accessTtlMin = Number(process.env.ACCESS_TOKEN_TTL_MINUTES || 15);
     const refreshTtlDays = Number(process.env.REFRESH_TOKEN_TTL_DAYS || 30);
     const sessionExpiresAt = new Date(Date.now() + refreshTtlDays * 24 * 60 * 60 * 1000);
@@ -62,10 +74,10 @@ export const SessionService = {
           identityId,
           userDeviceId,
           sessionType: 'operational',
-          washerId: safeContext.washerId || null,
-          branchId: safeContext.branchId || null,
-          staffMembershipId: safeContext.staffMembershipId || null,
-          customerMembershipId: safeContext.customerMembershipId || null,
+          washerId: isCustomer ? null : (safeContext.washerId || null),
+          branchId: isCustomer ? null : (safeContext.branchId || null),
+          staffMembershipId: isCustomer ? null : (safeContext.staffMembershipId || null),
+          customerMembershipId: isCustomer ? null : (safeContext.customerMembershipId || null),
           expiresAt: sessionExpiresAt
         }
       });
@@ -82,17 +94,27 @@ export const SessionService = {
         }
       });
 
-      const accessToken = TokenService.signAccessToken({
-        sessionId: session.id,
-        identityId: session.identityId,
-        sessionType: 'operational',
-        washerId: session.washerId,
-        branchId: session.branchId,
-        staffMembershipId: session.staffMembershipId,
-        customerMembershipId: session.customerMembershipId,
-        applicationId: safeContext.applicationId || null,
-        appType: safeContext.appType || null
-      }, `${accessTtlMin}m`);
+      const accessToken = TokenService.signAccessToken(
+        isCustomer
+          ? {
+              sessionId: session.id,
+              identityId: session.identityId,
+              sessionType: 'operational',
+              appType: 'customer'
+            }
+          : {
+              sessionId: session.id,
+              identityId: session.identityId,
+              sessionType: 'operational',
+              washerId: session.washerId,
+              branchId: session.branchId,
+              staffMembershipId: session.staffMembershipId,
+              customerMembershipId: session.customerMembershipId,
+              applicationId: safeContext.applicationId || null,
+              appType: safeContext.appType || null
+            },
+        `${accessTtlMin}m`
+      );
 
       return { session, accessToken, refreshToken: rawRefreshToken };
     });
@@ -126,15 +148,16 @@ export const SessionService = {
         throw new ApiError(403, 'INVALID_TOKEN', 'Device mismatch');
       }
 
+      const isCustomer = (oldSession.device?.appType === 'customer' || safeContext.appType === 'customer');
       const newSession = await tx.session.create({
         data: {
           identityId: oldSession.identityId,
           userDeviceId: userDeviceId || oldSession.userDeviceId,
           sessionType: 'operational',
-          washerId: safeContext.washerId || null,
-          branchId: safeContext.branchId || null,
-          staffMembershipId: safeContext.staffMembershipId || null,
-          customerMembershipId: safeContext.customerMembershipId || null,
+          washerId: isCustomer ? null : (safeContext.washerId || null),
+          branchId: isCustomer ? null : (safeContext.branchId || null),
+          staffMembershipId: isCustomer ? null : (safeContext.staffMembershipId || null),
+          customerMembershipId: isCustomer ? null : (safeContext.customerMembershipId || null),
           expiresAt: sessionExpiresAt
         }
       });
@@ -190,17 +213,27 @@ export const SessionService = {
         }
       });
 
-      const accessToken = TokenService.signAccessToken({
-        sessionId: newSession.id,
-        identityId: newSession.identityId,
-        sessionType: 'operational',
-        washerId: newSession.washerId,
-        branchId: newSession.branchId,
-        staffMembershipId: newSession.staffMembershipId,
-        customerMembershipId: newSession.customerMembershipId,
-        applicationId: oldSession.device?.applicationId || null,
-        appType: oldSession.device?.appType || null
-      }, `${accessTtlMin}m`);
+      const accessToken = TokenService.signAccessToken(
+        isCustomer
+          ? {
+              sessionId: newSession.id,
+              identityId: newSession.identityId,
+              sessionType: 'operational',
+              appType: 'customer'
+            }
+          : {
+              sessionId: newSession.id,
+              identityId: newSession.identityId,
+              sessionType: 'operational',
+              washerId: newSession.washerId,
+              branchId: newSession.branchId,
+              staffMembershipId: newSession.staffMembershipId,
+              customerMembershipId: newSession.customerMembershipId,
+              applicationId: oldSession.device?.applicationId || null,
+              appType: oldSession.device?.appType || null
+            },
+        `${accessTtlMin}m`
+      );
 
       return { session: newSession, accessToken, refreshToken: rawRefreshToken };
     };
@@ -266,17 +299,28 @@ export const SessionService = {
             data: { replacedById: newToken.id }
           });
 
-          const accessToken = TokenService.signAccessToken({
-            sessionId: token.session.id,
-            identityId: token.session.identityId,
-            sessionType: token.session.sessionType,
-            washerId: token.session.washerId,
-            branchId: token.session.branchId,
-            staffMembershipId: token.session.staffMembershipId,
-            customerMembershipId: token.session.customerMembershipId,
-            applicationId: token.session.device?.applicationId || null,
-            appType: token.session.device?.appType || null
-          }, accessTtlMin);
+          const isCustomer = (token.session.device?.appType === 'customer') || (!token.session.staffMembershipId && !token.session.washerId);
+          const accessToken = TokenService.signAccessToken(
+            isCustomer
+              ? {
+                  sessionId: token.session.id,
+                  identityId: token.session.identityId,
+                  sessionType: token.session.sessionType,
+                  appType: 'customer'
+                }
+              : {
+                  sessionId: token.session.id,
+                  identityId: token.session.identityId,
+                  sessionType: token.session.sessionType,
+                  washerId: token.session.washerId,
+                  branchId: token.session.branchId,
+                  staffMembershipId: token.session.staffMembershipId,
+                  customerMembershipId: token.session.customerMembershipId,
+                  applicationId: token.session.device?.applicationId || null,
+                  appType: token.session.device?.appType || null
+                },
+            `${accessTtlMin}m`
+          );
 
           return { accessToken, refreshToken: newRawRefreshToken };
         } else {

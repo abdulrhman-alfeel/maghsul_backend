@@ -13,7 +13,7 @@ export function createSocketContextResolver(dependencies = {}) {
     };
   };
 
-  return async function resolveContext(rawAccessToken) {
+  return async function resolveContext(rawAccessToken, requestedWasherId = null) {
     const { TokenService, SessionService, PermissionService, prisma } = await getDeps();
     let claims;
     try {
@@ -90,7 +90,68 @@ export function createSocketContextResolver(dependencies = {}) {
       throw err;
     }
 
-    // Verify Washer / Branch Membership if it's a staff session
+    // Decode token to get actual expiry (exp claim)
+    let accessTokenExpiresAt = null;
+    try {
+      const decodedPayload = jwt.decode(rawAccessToken);
+      if (decodedPayload && decodedPayload.exp) {
+        accessTokenExpiresAt = new Date(decodedPayload.exp * 1000);
+      }
+    } catch (e) {
+      // Ignore
+    }
+
+    const isCustomer = claims.appType === 'customer' || (!claims.appType && !session.staffMembershipId && !claims.staffMembershipId);
+
+    // =========================================================================
+    // Customer Realtime Resolution (Strict X-Washer-Id / Direct DB Lookup)
+    // =========================================================================
+    if (isCustomer) {
+      const targetWasherId = requestedWasherId || claims.washerId || (claims.applicationId && claims.applicationId.startsWith('was_') ? claims.applicationId : null);
+
+      if (!targetWasherId) {
+        const err = new Error('Washer ID required for customer socket connection');
+        err.data = { code: SOCKET_ERRORS.SOCKET_CONTEXT_INVALID };
+        throw err;
+      }
+
+      const washer = await prisma.washer.findUnique({
+        where: { id: targetWasherId },
+        select: { id: true, name: true, status: true }
+      });
+
+      if (!washer) {
+        const err = new Error('Washer not found');
+        err.data = { code: 'SOCKET_WASHER_NOT_FOUND' };
+        throw err;
+      }
+
+      if (washer.status !== 'active') {
+        const err = new Error('Washer is inactive');
+        err.data = { code: 'SOCKET_WASHER_INACTIVE' };
+        throw err;
+      }
+
+      const membership = await prisma.customerMembership.findUnique({
+        where: { identityId_washerId: { identityId: session.identityId, washerId: washer.id } }
+      });
+
+      const hasActiveMembership = !!(membership && membership.status === 'active');
+
+      return Object.freeze({
+        identityId: session.identityId,
+        sessionId: session.id,
+        washerId: washer.id,
+        customerMembershipId: hasActiveMembership ? membership.id : null,
+        hasMembership: hasActiveMembership,
+        appType: 'customer',
+        accessTokenExpiresAt
+      });
+    }
+
+    // =========================================================================
+    // Staff Realtime Resolution (Operational Staff Type)
+    // =========================================================================
     let permissions = [];
     if (session.staffMembershipId) {
       const membership = await prisma.staffMembership.findUnique({
@@ -126,18 +187,8 @@ export function createSocketContextResolver(dependencies = {}) {
 
       const permSet = await PermissionService.resolvePermissions(session.washerId, session.staffMembershipId, session.branchId);
       permissions = Array.from(permSet);
-    } else if (session.customerMembershipId) {
-      const membership = await prisma.customerMembership.findUnique({
-        where: { id: session.customerMembershipId }
-      });
-      if (!membership || membership.status !== 'active' || membership.washerId !== session.washerId) {
-        const err = new Error('Customer membership invalid');
-        err.data = { code: SOCKET_ERRORS.SOCKET_MEMBERSHIP_INVALID };
-        throw err;
-      }
     }
 
-    // Determine application based on token claims
     if (!claims.applicationId) {
       const err = new Error('Application not found');
       err.data = { code: SOCKET_ERRORS.SOCKET_APPLICATION_NOT_FOUND || 'SOCKET_APPLICATION_NOT_FOUND' };
@@ -154,28 +205,6 @@ export function createSocketContextResolver(dependencies = {}) {
     const applicationId = claims.applicationId;
     const appType = claims.appType;
 
-    // Decode token to get actual expiry (exp claim)
-    let accessTokenExpiresAt = null;
-    try {
-      const decodedPayload = jwt.decode(rawAccessToken);
-      if (decodedPayload && decodedPayload.exp) {
-        accessTokenExpiresAt = new Date(decodedPayload.exp * 1000);
-      }
-    } catch (e) {
-      // Ignore
-    }
-
-    if (appType === 'customer') {
-      return Object.freeze({
-        identityId: session.identityId,
-        sessionId: session.id,
-        applicationId,
-        appType,
-        accessTokenExpiresAt
-      });
-    }
-
-    // Otherwise, operational staff type
     const context = {
       identityId: session.identityId,
       sessionId: session.id,

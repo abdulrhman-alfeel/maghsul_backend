@@ -96,7 +96,8 @@ export async function startSocketInfrastructure(httpServer, options = {}) {
     namespace.use(async (socket, next) => {
       try {
         const rawAccessToken = socket.data.rawAccessToken;
-        const context = await resolveContext(rawAccessToken);
+        const requestedWasherId = socket.data.requestedWasherId;
+        const context = await resolveContext(rawAccessToken, requestedWasherId);
         socket.data.context = context;
         next();
       } catch (err) {

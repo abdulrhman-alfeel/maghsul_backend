@@ -98,7 +98,7 @@ describe('RT-3: Target Resolver Customer Isolation', () => {
     expect(result.rooms).toContain('washer:was_fajr_001');
     expect(result.rooms).toContain('branch:br_001');
     expect(result.rooms).toContain('identity:ident_driver');
-    expect(result.rooms).toContain('app_identity:com.fajr.customer:ident_customer');
+    expect(result.rooms).toContain('app_identity:was_fajr_001:ident_customer');
     expect(result.rooms).not.toContain('identity:ident_customer'); // customer MUST NOT get a generic identity room
 
     fetchSpy.mockRestore();
@@ -131,8 +131,7 @@ describe('RT-3: Target Resolver Customer Isolation', () => {
           id: 'ord_123',
           washerId: 'was_fajr_001',
           branchId: 'br_001',
-          customerMembershipId: 'cm_123',
-          originCustomerApplicationId: 'com.fajr.customer'
+          customerMembershipId: 'cm_123'
         })
       },
       customerMembership: {
@@ -146,7 +145,7 @@ describe('RT-3: Target Resolver Customer Isolation', () => {
 
     expect(result.rooms).toContain('washer:was_fajr_001');
     expect(result.rooms).toContain('branch:br_001');
-    expect(result.rooms).toContain('app_identity:com.fajr.customer:ident_customer');
+    expect(result.rooms).toContain('app_identity:was_fajr_001:ident_customer');
     expect(result.rooms).not.toContain('identity:ident_customer');
 
     fetchSpy.mockRestore();
@@ -178,8 +177,7 @@ describe('RT-3: Target Resolver Customer Isolation', () => {
           id: 'ord_123',
           washerId: 'was_fajr_001',
           branchId: 'br_001',
-          customerMembershipId: 'cm_123',
-          originCustomerApplicationId: 'com.fajr.customer'
+          customerMembershipId: 'cm_123'
         })
       },
       customerMembership: {
@@ -197,7 +195,7 @@ describe('RT-3: Target Resolver Customer Isolation', () => {
     expect(result.rooms).toContain('washer:was_fajr_001');
     expect(result.rooms).toContain('branch:br_001');
     expect(result.rooms).toContain('identity:ident_driver');
-    expect(result.rooms).toContain('app_identity:com.fajr.customer:ident_customer');
+    expect(result.rooms).toContain('app_identity:was_fajr_001:ident_customer');
     expect(result.rooms).not.toContain('identity:ident_customer');
 
     fetchSpy.mockRestore();

@@ -146,10 +146,10 @@ const OrderService = {
       }
     }
 
-    // Washer validation from context
-    const canonicalWasherId = actorContext.washerId || washerId;
-    if (washerId && actorContext.washerId && washerId !== actorContext.washerId) {
-      throw new ApiError(400, 'customer_application_washer_mismatch', 'Application cannot create order for this washer');
+    // Washer validation strictly from trusted actorContext (never body)
+    const canonicalWasherId = actorContext.washerId;
+    if (!canonicalWasherId) {
+      throw new ApiError(400, 'WASHER_HEADER_REQUIRED', 'Customer washer context is required');
     }
 
     const order = await prisma.$transaction(async (tx) => {
@@ -219,7 +219,6 @@ const OrderService = {
 
       const orderData = {
         customerMembershipId: membership.id,
-        originCustomerApplicationId: actorContext.applicationId,
         washerId: canonicalWasherId,
         branchId: finalBranchId,
         pickupLat: validatedPickup.lat,

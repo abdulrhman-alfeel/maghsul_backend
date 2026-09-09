@@ -8,10 +8,6 @@ describe('Canonical Session Context & Middleware', () => {
   let customerIdentity, washer, branch, customerMembership, sessionData;
 
   beforeAll(async () => {
-    await prisma.driverTask.deleteMany({});
-    await prisma.orderItem.deleteMany({});
-    await prisma.orderEvent.deleteMany({});
-    await prisma.order.deleteMany({});
     await setupTestDb();
     
     // Washer
@@ -78,18 +74,21 @@ describe('Canonical Session Context & Middleware', () => {
     const res = await request(app)
       .post('/api/test/context-guard')
       .set('Authorization', `Bearer ${sessionData.accessToken}`)
+      .set('X-Washer-Id', washer.id)
       .send({});
       
     expect(res.status).toBe(200);
     expect(res.body.isAuthFrozen).toBe(true);
     expect(res.body.isCustomerFrozen).toBe(true);
     
-    const authExpectedKeys = ['appType', 'applicationId', 'identityId', 'sessionId'];
-    const customerExpectedKeys = ['appType', 'applicationId', 'identityId', 'sessionId', 'washerId'];
+    const authExpectedKeys = ['appType', 'identityId', 'sessionId'];
+    const customerExpectedKeys = ['appType', 'identityId', 'sessionId', 'washerId'];
     expect(res.body.authKeys.sort()).toEqual(authExpectedKeys.sort());
     expect(res.body.customerKeys.sort()).toEqual(customerExpectedKeys.sort());
     
     expect(res.body.authContext.appType).toBe('customer');
-    expect(res.body.authContext.applicationId).toBe('com.laundry.customer');
+    expect(res.body.authContext.applicationId).toBeUndefined();
+    expect(res.body.customerContext.applicationId).toBeUndefined();
+    expect(res.body.customerContext.washerId).toBe(washer.id);
   });
 });

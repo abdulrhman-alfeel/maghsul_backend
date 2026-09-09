@@ -266,21 +266,17 @@ registerEvent({
     const washerIds = [aggregate.washerId];
     const branchIds = aggregate.branchId ? [aggregate.branchId] : [];
     const identityIds = [];
-    const appIdentities = [];
+    const washerIdentities = [];
 
     const customerMembership = await prisma.customerMembership.findUnique({
       where: { id: aggregate.customerMembershipId }
     });
 
     if (customerMembership) {
-      if (aggregate.originCustomerApplicationId) {
-        appIdentities.push({
-          applicationId: aggregate.originCustomerApplicationId,
-          identityId: customerMembership.identityId
-        });
-      } else {
-        identityIds.push(customerMembership.identityId);
-      }
+      washerIdentities.push({
+        washerId: aggregate.washerId,
+        identityId: customerMembership.identityId
+      });
     }
 
     if (aggregate.driverStaffMembershipId) {
@@ -292,7 +288,7 @@ registerEvent({
       }
     }
 
-    return { washerIds, branchIds, identityIds, appIdentities };
+    return { washerIds, branchIds, identityIds, washerIdentities };
   },
   buildClientPayload(aggregate) {
     return {
@@ -324,21 +320,17 @@ registerEvent({
     const washerIds = [aggregate.washerId];
     const branchIds = aggregate.branchId ? [aggregate.branchId] : [];
     const identityIds = [];
-    const appIdentities = [];
+    const washerIdentities = [];
 
     const customerMembership = await prisma.customerMembership.findUnique({
       where: { id: aggregate.customerMembershipId }
     });
 
     if (customerMembership) {
-      if (aggregate.originCustomerApplicationId) {
-        appIdentities.push({
-          applicationId: aggregate.originCustomerApplicationId,
-          identityId: customerMembership.identityId
-        });
-      } else {
-        identityIds.push(customerMembership.identityId);
-      }
+      washerIdentities.push({
+        washerId: aggregate.washerId,
+        identityId: customerMembership.identityId
+      });
     }
 
     if (aggregate.driverStaffMembershipId) {
@@ -350,7 +342,7 @@ registerEvent({
       }
     }
 
-    return { washerIds, branchIds, identityIds, appIdentities };
+    return { washerIds, branchIds, identityIds, washerIdentities };
   },
   buildClientPayload(aggregate) {
     return {
@@ -385,30 +377,26 @@ registerEvent({
     });
 
     if (!order) {
-      return { washerIds: [], branchIds: [], identityIds: [], appIdentities: [] };
+      return { washerIds: [], branchIds: [], identityIds: [], washerIdentities: [] };
     }
 
     const washerIds = [order.washerId];
     const branchIds = order.branchId ? [order.branchId] : [];
     const identityIds = [];
-    const appIdentities = [];
+    const washerIdentities = [];
 
     const customerMembership = await prisma.customerMembership.findUnique({
       where: { id: order.customerMembershipId }
     });
 
     if (customerMembership) {
-      if (order.originCustomerApplicationId) {
-        appIdentities.push({
-          applicationId: order.originCustomerApplicationId,
-          identityId: customerMembership.identityId
-        });
-      } else {
-        identityIds.push(customerMembership.identityId);
-      }
+      washerIdentities.push({
+        washerId: order.washerId,
+        identityId: customerMembership.identityId
+      });
     }
 
-    return { washerIds, branchIds, identityIds, appIdentities };
+    return { washerIds, branchIds, identityIds, washerIdentities };
   },
   buildClientPayload(aggregate) {
     return {
@@ -444,7 +432,7 @@ registerEvent({
     const washerIds = order ? [order.washerId] : [];
     const branchIds = (order && order.branchId) ? [order.branchId] : [];
     const identityIds = [];
-    const appIdentities = [];
+    const washerIdentities = [];
 
     if (order) {
       const customerMembership = await prisma.customerMembership.findUnique({
@@ -452,14 +440,10 @@ registerEvent({
       });
 
       if (customerMembership) {
-        if (order.originCustomerApplicationId) {
-          appIdentities.push({
-            applicationId: order.originCustomerApplicationId,
-            identityId: customerMembership.identityId
-          });
-        } else {
-          identityIds.push(customerMembership.identityId);
-        }
+        washerIdentities.push({
+          washerId: order.washerId,
+          identityId: customerMembership.identityId
+        });
       }
     }
 
@@ -472,7 +456,7 @@ registerEvent({
       }
     }
 
-    return { washerIds, branchIds, identityIds, appIdentities };
+    return { washerIds, branchIds, identityIds, washerIdentities };
   },
   buildClientPayload(aggregate) {
     return {
@@ -505,7 +489,7 @@ registerEvent({
     const washerIds = order ? [order.washerId] : [];
     const branchIds = (order && order.branchId) ? [order.branchId] : [];
     const identityIds = [];
-    const appIdentities = [];
+    const washerIdentities = [];
 
     if (order) {
       const customerMembership = await prisma.customerMembership.findUnique({
@@ -513,14 +497,10 @@ registerEvent({
       });
 
       if (customerMembership) {
-        if (order.originCustomerApplicationId) {
-          appIdentities.push({
-            applicationId: order.originCustomerApplicationId,
-            identityId: customerMembership.identityId
-          });
-        } else {
-          identityIds.push(customerMembership.identityId);
-        }
+        washerIdentities.push({
+          washerId: order.washerId,
+          identityId: customerMembership.identityId
+        });
       }
     }
 
@@ -533,7 +513,7 @@ registerEvent({
       }
     }
 
-    return { washerIds, branchIds, identityIds, appIdentities };
+    return { washerIds, branchIds, identityIds, washerIdentities };
   },
   buildClientPayload(aggregate) {
     return {

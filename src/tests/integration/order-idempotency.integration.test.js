@@ -3,8 +3,8 @@ import { app } from '../../../src/app.js';
 import prisma from '../../../src/config/db.js';
 import { createTestIdentity, createCustomerMembership, setupTestDb, teardownTestDb } from './test-utils.js';
 import { SessionService } from '../../../src/modules/auth/services/session.service.js';
+import { closeNotificationQueue } from '../../../src/config/queue.js';
 import crypto from 'crypto';
-import { ApplicationRegistry } from '../../../src/config/application.registry.js';
 
 describe('Order Idempotency Contract Evidence', () => {
   let customerIdentity, washer, branch, customerMembership;
@@ -24,9 +24,6 @@ describe('Order Idempotency Contract Evidence', () => {
       data: { branchId: branch.id, name: 'Main Zone', coverageType: 'circle', centerLat: 24.7136, centerLng: 46.6753, radiusMeters: 50000, isActive: true }
     });
 
-    // Override application registry for this test dynamically
-    ApplicationRegistry['com.laundry.customer'] = { appType: 'customer', isActive: true, platform: 'ios/android', washerId: washer.id };
-
     customerIdentity = await createTestIdentity('+966500000041');
     customerMembership = await createCustomerMembership(customerIdentity.id, washer.id);
     
@@ -42,18 +39,18 @@ describe('Order Idempotency Contract Evidence', () => {
 
     sessionData = await SessionService.createOperationalSession(
       customerIdentity.id,
-      { purpose: 'client', customerMembershipId: customerMembership.id, washerId: washer.id },
+      { appType: 'customer' },
       userDevice.id
     );
   });
 
   afterAll(async () => {
+    await closeNotificationQueue();
     await teardownTestDb();
   });
 
   it('Same key + same content => Original Order returned, no duplicate', async () => {
     const payload = {
-      
       branchId: branch.id, pickup: { lat: 24.7, lng: 46.7 },
       delivery: { lat: 24.7, lng: 46.7 }
     };
@@ -64,6 +61,7 @@ describe('Order Idempotency Contract Evidence', () => {
     const res1 = await request(app)
       .post('/api/orders/create')
       .set('Authorization', `Bearer ${sessionData.accessToken}`)
+      .set('X-Washer-Id', washer.id)
       .set('Idempotency-Key', idempotencyKey)
       .send(payload);
       
@@ -76,6 +74,7 @@ describe('Order Idempotency Contract Evidence', () => {
     const res2 = await request(app)
       .post('/api/orders/create')
       .set('Authorization', `Bearer ${sessionData.accessToken}`)
+      .set('X-Washer-Id', washer.id)
       .set('Idempotency-Key', idempotencyKey)
       .send(payload);
       
@@ -90,7 +89,6 @@ describe('Order Idempotency Contract Evidence', () => {
 
   it('Same key + different content => Rejected', async () => {
     const payload1 = {
-      
       branchId: branch.id, pickup: { lat: 24.7, lng: 46.7 },
       delivery: { lat: 24.7, lng: 46.7 }
     };
@@ -104,6 +102,7 @@ describe('Order Idempotency Contract Evidence', () => {
     const res1 = await request(app)
       .post('/api/orders/create')
       .set('Authorization', `Bearer ${sessionData.accessToken}`)
+      .set('X-Washer-Id', washer.id)
       .set('Idempotency-Key', idempotencyKey)
       .send(payload1);
       
@@ -112,6 +111,7 @@ describe('Order Idempotency Contract Evidence', () => {
     const res2 = await request(app)
       .post('/api/orders/create')
       .set('Authorization', `Bearer ${sessionData.accessToken}`)
+      .set('X-Washer-Id', washer.id)
       .set('Idempotency-Key', idempotencyKey)
       .send(payload2);
       
@@ -121,7 +121,6 @@ describe('Order Idempotency Contract Evidence', () => {
 
   it('Concurrent same-key requests => No duplicate Order', async () => {
     const payload = {
-      
       branchId: branch.id, pickup: { lat: 24.8, lng: 46.8 },
       delivery: { lat: 24.8, lng: 46.8 }
     };
@@ -133,11 +132,13 @@ describe('Order Idempotency Contract Evidence', () => {
       request(app)
         .post('/api/orders/create')
         .set('Authorization', `Bearer ${sessionData.accessToken}`)
+        .set('X-Washer-Id', washer.id)
         .set('Idempotency-Key', idempotencyKey)
         .send(payload),
       request(app)
         .post('/api/orders/create')
         .set('Authorization', `Bearer ${sessionData.accessToken}`)
+        .set('X-Washer-Id', washer.id)
         .set('Idempotency-Key', idempotencyKey)
         .send(payload)
     ]);

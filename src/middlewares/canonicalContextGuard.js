@@ -1,3 +1,4 @@
+import prisma from '../config/db.js';
 import { CanonicalSessionContextService } from '../modules/auth/services/canonical-session-context.service.js';
 import ApiError from '../helpers/apiError.js';
 
@@ -38,13 +39,35 @@ export async function requireCanonicalCustomerContext(req, res, next) {
       throw new ApiError(403, 'CUSTOMER_APP_REQUIRED', 'This endpoint requires a customer application scope');
     }
 
-    // Build the specific customer context
+    // Exact washerId resolution: MUST come from X-Washer-Id header (via washerContext or direct validation)
+    let validatedWasherId = req.washerContext?.washerId;
+
+    if (!validatedWasherId) {
+      const rawHeader = req.headers['x-washer-id'];
+      if (!rawHeader || typeof rawHeader !== 'string' || !rawHeader.trim()) {
+        throw new ApiError(400, 'WASHER_HEADER_REQUIRED', 'X-Washer-Id header is required');
+      }
+      const washerId = rawHeader.trim();
+      const washer = await prisma.washer.findUnique({
+        where: { id: washerId },
+        select: { id: true, status: true, name: true }
+      });
+      if (!washer) {
+        throw new ApiError(404, 'WASHER_NOT_FOUND', 'Washer not found');
+      }
+      if (washer.status !== 'active') {
+        throw new ApiError(403, 'WASHER_INACTIVE', 'المغسلة غير مفعلة حالياً');
+      }
+      validatedWasherId = washer.id;
+      req.washerContext = Object.freeze({ washerId: washer.id, washerName: washer.name });
+    }
+
+    // Build canonical customer context combining session identity + header washer
     req.customerContext = Object.freeze({
       identityId: req.authContext.identityId,
       sessionId: req.authContext.sessionId,
-      applicationId: req.authContext.applicationId,
-      appType: 'customer',
-      washerId: internalState.washerId || session.washerId || req.authContext?.washerId || null
+      washerId: validatedWasherId,
+      appType: 'customer'
     });
 
     next();

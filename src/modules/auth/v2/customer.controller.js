@@ -8,8 +8,8 @@ import { ok } from '../../../helpers/apiResponse.js';
 /**
  * Customer Authentication Controller
  *
- * All routes using this controller must pass through appClientResolver first.
- * washerId is ONLY read from req.appClient — never from req.body.
+ * All routes using this controller pass through washerContextResolver first.
+ * washerId is ONLY read from req.washerContext (derived strictly from X-Washer-Id header) — never from req.body.
  */
 const CustomerController = {
 
@@ -17,18 +17,16 @@ const CustomerController = {
    * POST /api/auth/customer/send-otp
    *
    * Sends an OTP to the customer phone number.
-   * OTP is scoped to (phone, appClientId) to prevent cross-washer reuse.
+   * OTP authenticates the global Phone/Identity.
    */
   async sendOtp(req, res) {
     const { phone } = req.body;
-    const { appClientId } = req.appClient;
-
     const normalized = normalizePhone(phone);
     if (!normalized) {
       throw new ApiError(400, 'INVALID_PHONE', 'رقم الهاتف غير صالح');
     }
 
-    await OtpService.sendOtp(normalized, 'login', appClientId);
+    await OtpService.sendOtp(normalized, 'login', null);
 
     return ok(res, { sent: true }, 'تم إرسال رمز التحقق');
   },
@@ -42,15 +40,19 @@ const CustomerController = {
    */
   async verifyOtp(req, res) {
     const { phone, code } = req.body;
-    const { appClientId, washerId } = req.appClient;
+    const washerId = req.washerContext?.washerId || req.appClient?.washerId;
+
+    if (!washerId) {
+      throw new ApiError(400, 'WASHER_HEADER_REQUIRED', 'X-Washer-Id header is required');
+    }
 
     const normalized = normalizePhone(phone);
     if (!normalized) {
       throw new ApiError(400, 'INVALID_PHONE', 'رقم الهاتف غير صالح');
     }
 
-    // Verify OTP — scoped to same appClientId to prevent cross-washer reuse
-    await OtpService.verifyOtp(normalized, code, 'login', appClientId);
+    // Verify OTP globally for this phone
+    await OtpService.verifyOtp(normalized, code, 'login', null);
 
     // Find or create Identity (safe against concurrent requests via upsert)
     const identity = await prisma.identity.upsert({
@@ -72,11 +74,8 @@ const CustomerController = {
     });
 
     if (membership && membership.status === 'active') {
-      // Full operational session
+      // Full operational session (global, washer-agnostic)
       const result = await SessionService.createOperationalSession(identity.id, {
-        washerId,
-        customerMembershipId: membership.id,
-        applicationId: req.appClient.appKey,
         appType: 'customer'
       });
 
@@ -89,8 +88,6 @@ const CustomerController = {
     }
 
     const result = await SessionService.createProvisionalSession(identity.id, {
-      washerId,
-      applicationId: req.appClient.appKey,
       appType: 'customer'
     });
 
@@ -107,46 +104,76 @@ const CustomerController = {
    *
    * Completes customer enrollment using a Provisional Session.
    * Requires contextGuard + requireProvisionalSession.
-   * washerId is taken from Session in DB, NOT from body.
    */
   async enroll(req, res) {
-    const { identityId, sessionId, washerId: sessionWasherId } = req.authContext;
+    const { identityId, sessionId, sessionType } = req.authContext;
+    const targetWasherId = req.washerContext?.washerId;
 
-    // If route uses appClientResolver, enforce washerId consistency
-    if (req.appClient && req.appClient.washerId !== sessionWasherId) {
-      throw new ApiError(403, 'WASHER_CONTEXT_MISMATCH', 'سياق المغسلة غير متطابق');
-    }
-
-    if (!sessionWasherId) {
-      throw new ApiError(400, 'WASHER_CONTEXT_MISSING', 'لا يوجد سياق مغسلة في الجلسة');
+    if (!targetWasherId) {
+      throw new ApiError(400, 'WASHER_CONTEXT_MISSING', 'لا يوجد سياق مغسلة في الطلب');
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      // Idempotent — upsert CustomerMembership
-      const membership = await tx.customerMembership.upsert({
-        where: { identityId_washerId: { identityId, washerId: sessionWasherId } },
-        update: {}, // No-op if already exists
-        create: { identityId, washerId: sessionWasherId, status: 'active' }
+      // 1. Check if membership already exists
+      const existing = await tx.customerMembership.findUnique({
+        where: { identityId_washerId: { identityId, washerId: targetWasherId } }
       });
 
-      if (membership.status !== 'active') {
-        throw new ApiError(403, 'MEMBERSHIP_INACTIVE', 'العضوية غير نشطة');
+      let membership;
+      if (existing) {
+        // Enforce administrative status rule: never silently reactivate suspended/blocked/deleted membership
+        if (existing.status !== 'active') {
+          throw new ApiError(403, 'MEMBERSHIP_INACTIVE', 'العضوية غير نشطة أو محظورة في هذه المغسلة');
+        }
+        membership = existing;
+      } else {
+        // Create new active membership
+        membership = await tx.customerMembership.create({
+          data: { identityId, washerId: targetWasherId, status: 'active' }
+        });
       }
 
-      // Replace provisional session with operational
-      return await SessionService.createReplacementSession(sessionId, {
-        washerId: sessionWasherId,
-        customerMembershipId: membership.id
+      // 2. Session Handling:
+      if (sessionType === 'operational') {
+        // Existing operational session enrolling into an additional washer:
+        // Keep SAME session and token; do NOT replace or destroy session
+        return {
+          sessionType: 'operational',
+          accessToken: null,
+          refreshToken: null,
+          membershipId: membership.id,
+          isExistingSession: true
+        };
+      }
+
+      // Provisional session (first-time enrollment): upgrade to operational (global, washer-agnostic)
+      const sessionResult = await SessionService.createReplacementSession(sessionId, {
+        appType: 'customer'
       }, null, tx);
+
+      return {
+        sessionType: 'operational',
+        accessToken: sessionResult.accessToken,
+        refreshToken: sessionResult.refreshToken,
+        membershipId: membership.id,
+        isExistingSession: false
+      };
     });
 
-    return ok(res, {
+    const responsePayload = {
       sessionType: 'operational',
-      accessToken: result.accessToken,
-      refreshToken: result.refreshToken,
-      identity: { id: identityId }
-    }, 'تم التسجيل بنجاح');
+      identity: { id: identityId },
+      membership: { id: result.membershipId, washerId: targetWasherId }
+    };
+
+    if (result.accessToken) {
+      responsePayload.accessToken = result.accessToken;
+      responsePayload.refreshToken = result.refreshToken;
+    }
+
+    return ok(res, responsePayload, 'تم التسجيل بنجاح');
   }
 };
 
 export default CustomerController;
+

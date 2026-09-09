@@ -1,7 +1,6 @@
 import { jest } from '@jest/globals';
 import { createSocketContextResolver } from '../../modules/realtime/socket-context.resolver.js';
 import { SOCKET_ERRORS } from '../../modules/realtime/socket.constants.js';
-import { ApplicationRegistry } from '../../config/application.registry.js';
 
 describe('RT-6: Context Resolver & Environment Mapping', () => {
   let mockTokenService;
@@ -10,7 +9,6 @@ describe('RT-6: Context Resolver & Environment Mapping', () => {
   let resolveContext;
 
   beforeEach(() => {
-    ApplicationRegistry['com.fajr.customer'] = { appType: 'customer', isActive: true, platform: 'ios/android', washerId: 'was_fajr_001' };
     mockTokenService = {
       verifyAccessToken: jest.fn()
     };
@@ -20,6 +18,12 @@ describe('RT-6: Context Resolver & Environment Mapping', () => {
     mockPrisma = {
       session: {
         findUnique: jest.fn()
+      },
+      washer: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'was_fajr_001', name: 'Al Fajr', status: 'active' })
+      },
+      customerMembership: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'mem_1', status: 'active' })
       }
     };
 
@@ -27,7 +31,7 @@ describe('RT-6: Context Resolver & Environment Mapping', () => {
       tokenService: mockTokenService,
       sessionService: mockSessionService,
       prisma: mockPrisma,
-      permissionService: {} // Not strictly used for customer path in this test
+      permissionService: {}
     });
   });
 
@@ -39,7 +43,6 @@ describe('RT-6: Context Resolver & Environment Mapping', () => {
     mockTokenService.verifyAccessToken.mockReturnValue({
       sessionId: 'sess_1',
       identityId: 'id_1',
-      applicationId: 'com.fajr.customer',
       appType: 'customer'
     });
 
@@ -48,7 +51,7 @@ describe('RT-6: Context Resolver & Environment Mapping', () => {
 
     let error;
     try {
-      await resolveContext('fake_token');
+      await resolveContext('fake_token', 'was_fajr_001');
     } catch (e) {
       error = e;
     }
@@ -62,7 +65,6 @@ describe('RT-6: Context Resolver & Environment Mapping', () => {
     mockTokenService.verifyAccessToken.mockReturnValue({
       sessionId: 'sess_1',
       identityId: 'id_1',
-      applicationId: 'com.fajr.customer',
       appType: 'customer'
     });
 
@@ -73,13 +75,13 @@ describe('RT-6: Context Resolver & Environment Mapping', () => {
       sessionType: 'operational',
       isRevoked: false,
       expiresAt: new Date(Date.now() + 10000),
-      device: { applicationId: 'com.fajr.customer', appType: 'customer' },
+      device: { appType: 'customer' },
       identity: { status: 'active' }
     });
 
     let error;
     try {
-      await resolveContext('fake_token');
+      await resolveContext('fake_token', 'was_fajr_001');
     } catch (e) {
       error = e;
     }
@@ -89,11 +91,10 @@ describe('RT-6: Context Resolver & Environment Mapping', () => {
     expect(error.data.code).toBe(SOCKET_ERRORS.SOCKET_CONTEXT_INVALID);
   });
 
-  it('resolves and freezes context when everything is valid (Customer mapping)', async () => {
+  it('fails if washerId is missing for customer socket connection', async () => {
     mockTokenService.verifyAccessToken.mockReturnValue({
       sessionId: 'sess_1',
       identityId: 'id_1',
-      applicationId: 'com.fajr.customer',
       appType: 'customer'
     });
 
@@ -104,22 +105,56 @@ describe('RT-6: Context Resolver & Environment Mapping', () => {
       sessionType: 'operational',
       isRevoked: false,
       expiresAt: new Date(Date.now() + 10000),
-      device: { applicationId: 'com.fajr.customer', appType: 'customer' },
+      device: { appType: 'customer' },
       identity: { status: 'active' }
     });
 
-    const context = await resolveContext('fake_token');
+    let error;
+    try {
+      await resolveContext('fake_token', null);
+    } catch (e) {
+      error = e;
+    }
+
+    expect(error).toBeDefined();
+    expect(error.message).toBe('Washer ID required for customer socket connection');
+    expect(error.data.code).toBe(SOCKET_ERRORS.SOCKET_CONTEXT_INVALID);
+  });
+
+  it('resolves and freezes context when everything is valid (Customer mapping with X-Washer-Id)', async () => {
+    mockTokenService.verifyAccessToken.mockReturnValue({
+      sessionId: 'sess_1',
+      identityId: 'id_1',
+      appType: 'customer'
+    });
+
+    mockSessionService.getSessionState.mockResolvedValue('active');
+    mockPrisma.session.findUnique.mockResolvedValue({
+      id: 'sess_1',
+      identityId: 'id_1',
+      sessionType: 'operational',
+      isRevoked: false,
+      expiresAt: new Date(Date.now() + 10000),
+      device: { appType: 'customer' },
+      identity: { status: 'active' }
+    });
+
+    const context = await resolveContext('fake_token', 'was_fajr_001');
 
     expect(context.identityId).toBe('id_1');
     expect(context.sessionId).toBe('sess_1');
-    expect(context.applicationId).toBe('com.fajr.customer');
+    expect(context.washerId).toBe('was_fajr_001');
+    expect(context.hasMembership).toBe(true);
+    expect(context.customerMembershipId).toBe('mem_1');
     expect(context.appType).toBe('customer');
 
     // Prove Object is frozen
     expect(Object.isFrozen(context)).toBe(true);
 
+    // Verify mutations fail in strict mode
     expect(() => {
-      context.identityId = 'hacked';
-    }).toThrow();
+      'use strict';
+      context.tampered = true;
+    }).toThrow(TypeError);
   });
 });

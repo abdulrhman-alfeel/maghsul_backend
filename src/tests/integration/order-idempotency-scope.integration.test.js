@@ -47,6 +47,10 @@ describe('Phase 3D-2B-2B-1A: Idempotency Scope across Washers', () => {
   });
 
   afterAll(async () => {
+    try {
+      const { closeNotificationQueue } = await import('../../config/queue.js');
+      await closeNotificationQueue();
+    } catch (e) {}
     await teardownTestDb();
     delete ApplicationRegistry['com.fajr3.customer'];
     delete ApplicationRegistry['com.lamaa3.customer'];
@@ -61,6 +65,7 @@ describe('Phase 3D-2B-2B-1A: Idempotency Scope across Washers', () => {
     const res1 = await request(app)
       .post('/api/orders/create')
       .set('Authorization', `Bearer ${fajrToken}`)
+      .set('X-Washer-Id', washerFajr.id)
       .set('Idempotency-Key', idempotencyKey)
       .send(payloadFajr);
       
@@ -71,6 +76,7 @@ describe('Phase 3D-2B-2B-1A: Idempotency Scope across Washers', () => {
     const res2 = await request(app)
       .post('/api/orders/create')
       .set('Authorization', `Bearer ${lamaaToken}`)
+      .set('X-Washer-Id', washerLamaa.id)
       .set('Idempotency-Key', idempotencyKey)
       .send(payloadLamaa);
       

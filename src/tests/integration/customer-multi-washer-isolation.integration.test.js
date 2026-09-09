@@ -72,6 +72,10 @@ describe('Phase 3D-2B-2B-1A: Naqaa Multi-Washer Identity and Customer Applicatio
   });
 
   afterAll(async () => {
+    try {
+      const { closeNotificationQueue } = await import('../../config/queue.js');
+      await closeNotificationQueue();
+    } catch (e) {}
     await teardownTestDb();
   });
 
@@ -79,17 +83,57 @@ describe('Phase 3D-2B-2B-1A: Naqaa Multi-Washer Identity and Customer Applicatio
     it('should create order in Fajr using Fajr session correctly resolving canonical washer', async () => {
       const res = await request(app).post('/api/orders/create')
         .set('Authorization', `Bearer ${fajrToken}`)
+        .set('X-Washer-Id', washerFajr.id)
         .send({ branchId: branchFajr.id, pickup: { lat: 0, lng: 0 }, delivery: { lat: 0, lng: 0 } });
       
       expect(res.status).toBe(200);
       expect(res.body.data.washerId).toBe(washerFajr.id);
       expect(res.body.data.customerMembershipId).toBe(fajrMembership.id);
-      expect(res.body.data.originCustomerApplicationId).toBe('com.fajr.customer');
+      expect(res.body.data.originCustomerApplicationId == null).toBe(true);
+    });
+
+    it('CUSTOMER-CONTEXT-MEMBERSHIP-1: Same token dynamically resolves Membership A or B from DB, never cross-authorizing', async () => {
+      // 1. Same token targeting Washer A -> resolves Membership A
+      const resA = await request(app).get('/api/orders/my-orders')
+        .set('Authorization', `Bearer ${fajrToken}`)
+        .set('X-Washer-Id', washerFajr.id);
+      expect(resA.status).toBe(200);
+      resA.body.data.items.forEach(o => {
+        expect(o.customerMembershipId).toBe(fajrMembership.id);
+      });
+
+      // 2. SAME token targeting Washer B -> resolves Membership B dynamically from DB
+      const resB = await request(app).get('/api/orders/my-orders')
+        .set('Authorization', `Bearer ${fajrToken}`)
+        .set('X-Washer-Id', washerLamaa.id);
+      expect(resB.status).toBe(200);
+      resB.body.data.items.forEach(o => {
+        expect(o.customerMembershipId).toBe(lamaaMembership.id);
+      });
+
+      // 3. User2 has membership ONLY in Washer Lamaa, not in Washer Fajr
+      const user2LamaaMem = await prisma.customerMembership.create({
+        data: { identityId: user2.id, washerId: washerLamaa.id, status: 'active' }
+      });
+      const user2Session = await prisma.session.create({
+        data: { identityId: user2.id, sessionType: 'operational', expiresAt: new Date(Date.now() + 86400000) }
+      });
+      const user2Token = TokenService.signAccessToken({ sessionId: user2Session.id, identityId: user2.id, sessionType: 'operational', appType: 'customer' });
+
+      // User2 attempting to create order on Washer Fajr with only Washer Lamaa membership -> MUST FAIL CLOSED
+      const resFail = await request(app).post('/api/orders/create')
+        .set('Authorization', `Bearer ${user2Token}`)
+        .set('X-Washer-Id', washerFajr.id)
+        .send({ branchId: branchFajr.id, pickup: { lat: 0, lng: 0 }, delivery: { lat: 0, lng: 0 } });
+
+      expect(resFail.status).toBe(403);
+      expect(resFail.body.code).toBe('MEMBERSHIP_NOT_FOUND');
     });
 
     it('should reject order creation if input.washerId overrides canonical washer', async () => {
       const res = await request(app).post('/api/orders/create')
         .set('Authorization', `Bearer ${fajrToken}`)
+        .set('X-Washer-Id', washerFajr.id)
         .send({ washerId: washerLamaa.id, branchId: branchFajr.id, pickup: { lat: 0, lng: 0 }, delivery: { lat: 0, lng: 0 } });
       
       expect(res.status).toBe(400);
@@ -99,6 +143,7 @@ describe('Phase 3D-2B-2B-1A: Naqaa Multi-Washer Identity and Customer Applicatio
     it('should reject order creation if branchId is missing (branch selection required)', async () => {
       const res = await request(app).post('/api/orders/create')
         .set('Authorization', `Bearer ${fajrToken}`)
+        .set('X-Washer-Id', washerFajr.id)
         .send({ pickup: { lat: 0, lng: 0 }, delivery: { lat: 0, lng: 0 } });
       
       expect(res.status).toBe(400);
@@ -108,6 +153,7 @@ describe('Phase 3D-2B-2B-1A: Naqaa Multi-Washer Identity and Customer Applicatio
     it('should reject order creation if branch belongs to a different washer', async () => {
       const res = await request(app).post('/api/orders/create')
         .set('Authorization', `Bearer ${fajrToken}`)
+        .set('X-Washer-Id', washerFajr.id)
         .send({ branchId: branchLamaa.id, pickup: { lat: 0, lng: 0 }, delivery: { lat: 0, lng: 0 } });
       
       expect(res.status).toBe(400);
@@ -119,15 +165,20 @@ describe('Phase 3D-2B-2B-1A: Naqaa Multi-Washer Identity and Customer Applicatio
       // Create a Lamaa order
       await request(app).post('/api/orders/create')
         .set('Authorization', `Bearer ${lamaaToken}`)
+        .set('X-Washer-Id', washerLamaa.id)
         .send({ branchId: branchLamaa.id, pickup: { lat: 0, lng: 0 }, delivery: { lat: 0, lng: 0 } });
 
-      const fajrRes = await request(app).get('/api/orders/my-orders').set('Authorization', `Bearer ${fajrToken}`);
+      const fajrRes = await request(app).get('/api/orders/my-orders')
+        .set('Authorization', `Bearer ${fajrToken}`)
+        .set('X-Washer-Id', washerFajr.id);
       expect(fajrRes.status).toBe(200);
       fajrRes.body.data.items.forEach(o => {
         expect(o.washerId).toBe(washerFajr.id);
       });
 
-      const lamaaRes = await request(app).get('/api/orders/my-orders').set('Authorization', `Bearer ${lamaaToken}`);
+      const lamaaRes = await request(app).get('/api/orders/my-orders')
+        .set('Authorization', `Bearer ${lamaaToken}`)
+        .set('X-Washer-Id', washerLamaa.id);
       expect(lamaaRes.status).toBe(200);
       expect(lamaaRes.body.data.items.length).toBeGreaterThan(0);
       lamaaRes.body.data.items.forEach(o => {
@@ -136,18 +187,26 @@ describe('Phase 3D-2B-2B-1A: Naqaa Multi-Washer Identity and Customer Applicatio
     });
 
     it('should prevent Lamaa session from fetching Fajr order', async () => {
-      const fajrRes = await request(app).get('/api/orders/my-orders').set('Authorization', `Bearer ${fajrToken}`);
+      const fajrRes = await request(app).get('/api/orders/my-orders')
+        .set('Authorization', `Bearer ${fajrToken}`)
+        .set('X-Washer-Id', washerFajr.id);
       const fajrOrderId = fajrRes.body.data.items[0].id;
 
-      const lamaaFetch = await request(app).get(`/api/orders/${fajrOrderId}`).set('Authorization', `Bearer ${lamaaToken}`);
+      const lamaaFetch = await request(app).get(`/api/orders/${fajrOrderId}`)
+        .set('Authorization', `Bearer ${lamaaToken}`)
+        .set('X-Washer-Id', washerLamaa.id);
       expect(lamaaFetch.status).toBe(403);
     });
 
     it('should prevent Lamaa session from cancelling Fajr order', async () => {
-      const fajrRes = await request(app).get('/api/orders/my-orders').set('Authorization', `Bearer ${fajrToken}`);
+      const fajrRes = await request(app).get('/api/orders/my-orders')
+        .set('Authorization', `Bearer ${fajrToken}`)
+        .set('X-Washer-Id', washerFajr.id);
       const fajrOrderId = fajrRes.body.data.items[0].id;
 
-      const lamaaCancel = await request(app).put(`/api/orders/${fajrOrderId}/customer-cancel`).set('Authorization', `Bearer ${lamaaToken}`);
+      const lamaaCancel = await request(app).put(`/api/orders/${fajrOrderId}/customer-cancel`)
+        .set('Authorization', `Bearer ${lamaaToken}`)
+        .set('X-Washer-Id', washerLamaa.id);
       expect(lamaaCancel.status).toBe(403);
     });
   });
@@ -167,7 +226,9 @@ describe('Phase 3D-2B-2B-1A: Naqaa Multi-Washer Identity and Customer Applicatio
         }
       });
 
-      const fajrRes = await request(app).get('/api/orders/my-orders').set('Authorization', `Bearer ${fajrToken}`);
+      const fajrRes = await request(app).get('/api/orders/my-orders')
+        .set('Authorization', `Bearer ${fajrToken}`)
+        .set('X-Washer-Id', washerFajr.id);
       expect(fajrRes.status).toBe(200);
       
       const branches = fajrRes.body.data.items.map(o => o.branchId);

@@ -5,17 +5,20 @@ import logger from '../../config/logger.js';
 export async function socketAuthMiddleware(socket, next) {
   const { auth, query } = socket.handshake;
 
-  // Reject untrusted context fields in query or auth
-  const untrustedFields = ['userId', 'identityId', 'sessionId', 'washerId', 'branchId', 'role', 'permissions', 'accessToken'];
-  
-  for (const field of untrustedFields) {
+  // Reject untrusted context fields in query
+  const untrustedQueryFields = ['userId', 'identityId', 'sessionId', 'washerId', 'branchId', 'role', 'permissions', 'accessToken'];
+  for (const field of untrustedQueryFields) {
     if (query && query[field]) {
       const err = new Error('Query parameters must not contain untrusted context fields.');
       err.data = { code: SOCKET_ERRORS.SOCKET_CONTEXT_INVALID };
       return next(err);
     }
-    // accessToken is allowed in auth, but others are not
-    if (field !== 'accessToken' && auth && auth[field]) {
+  }
+
+  // Reject untrusted context fields in auth (accessToken and washerId are allowed)
+  const untrustedAuthFields = ['userId', 'identityId', 'sessionId', 'branchId', 'role', 'permissions'];
+  for (const field of untrustedAuthFields) {
+    if (auth && auth[field]) {
       const err = new Error('Auth object must not contain untrusted context fields.');
       err.data = { code: SOCKET_ERRORS.SOCKET_CONTEXT_INVALID };
       return next(err);
@@ -43,6 +46,7 @@ export async function socketAuthMiddleware(socket, next) {
     socket.data = socket.data || {};
     socket.data.rawAccessToken = accessToken;
     socket.data.decodedToken = decoded;
+    socket.data.requestedWasherId = auth?.washerId ? String(auth.washerId).trim() : null;
     
     next();
   } catch (error) {

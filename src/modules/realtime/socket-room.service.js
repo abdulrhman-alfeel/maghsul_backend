@@ -10,12 +10,13 @@ export class SocketRoomService {
     if (!context) return;
 
     if (context.appType === 'customer') {
-      // Customer specific room policy
+      // Customer specific room policy (Model B)
       if (context.sessionId) {
         socket.join(SocketRoomFactory.buildSessionRoom(context.sessionId));
       }
-      if (context.applicationId && context.identityId) {
-        socket.join(SocketRoomFactory.buildAppIdentityRoom(context.applicationId, context.identityId));
+      const tenantRoomKey = context.washerId || context.applicationId;
+      if (context.hasMembership && tenantRoomKey && context.identityId) {
+        socket.join(SocketRoomFactory.buildAppIdentityRoom(tenantRoomKey, context.identityId));
       }
       return;
     }

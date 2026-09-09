@@ -29,24 +29,51 @@ export const ApplicationRegistry = new Proxy(SystemApplicationRegistry, {
   }
 });
 
+export const SYSTEM_SCOPES = {
+  'com.staff': {
+    applicationId: 'com.staff',
+    appKey: 'com.staff',
+    appType: 'dashboard',
+    isActive: true,
+    platform: 'web',
+    appName: 'Staff Dashboard'
+  },
+  'com.disabled': {
+    applicationId: 'com.disabled',
+    appKey: 'com.disabled',
+    appType: 'customer',
+    isActive: false,
+    platform: 'test',
+    appName: 'Disabled Test App'
+  }
+};
+
 export function validateApplicationFormat(appId) {
   if (!appId || typeof appId !== 'string') {
-    throw new Error('Washer/Application identifier must be a non-empty string.');
+    throw new Error('Application identifier must be a non-empty string.');
   }
   if (appId.length > 64) {
-    throw new Error('Identifier too long.');
+    throw new Error('Application identifier too long.');
+  }
+  if (!/^[a-zA-Z0-9._-]+$/.test(appId)) {
+    throw new Error('Application identifier contains invalid characters.');
   }
 }
 
 export const ApplicationRegistryService = {
   /**
-   * Dynamically resolves an application/washer identity solely using the Washer ID from PostgreSQL.
+   * Dynamically resolves an application/washer identity solely using Washer/AppClient records or built-in system scopes.
    */
   async resolveApplication(appId) {
     if (!appId || typeof appId !== 'string') return null;
     const trimmedId = appId.trim();
 
-    // 1. Direct Lookup in Washer table (Primary Strategy)
+    // 1. Built-in system scope (e.g. staff dashboard)
+    if (SYSTEM_SCOPES[trimmedId]) {
+      return { ...SYSTEM_SCOPES[trimmedId] };
+    }
+
+    // 2. Direct Lookup in Washer table
     const washer = await prisma.washer.findUnique({
       where: { id: trimmedId },
       select: { id: true, name: true, status: true }
@@ -63,7 +90,7 @@ export const ApplicationRegistryService = {
       };
     }
 
-    // 2. Query AppClient table if mapped
+    // 3. Query AppClient table if mapped
     const appClient = await prisma.appClient.findUnique({
       where: { appKey: trimmedId },
       select: { id: true, appKey: true, washerId: true, isActive: true, appName: true, platform: true }
@@ -82,39 +109,25 @@ export const ApplicationRegistryService = {
       };
     }
 
-    // 3. Fallback to active washer in database
-    const activeWasher = await prisma.washer.findFirst({
-      where: { status: 'active' },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true, name: true, status: true }
-    });
-
-    if (activeWasher) {
-      return {
-        applicationId: activeWasher.id,
-        appKey: activeWasher.id,
-        appType: 'customer',
-        washerId: activeWasher.id,
-        isActive: true,
-        appName: activeWasher.name
-      };
-    }
-
     return null;
   },
 
   /**
-   * Validates application scope against the Washer database.
+   * Validates application scope against the Washer database or built-in system scopes.
    */
   async validateScope(appId, expectedAppType = null) {
-    const trimmedId = (appId || '').toString().trim();
+    validateApplicationFormat(appId);
+    const trimmedId = appId.trim();
     const app = await this.resolveApplication(trimmedId);
 
     if (!app) {
-      throw new Error('Unknown washer identifier');
+      throw new Error('Unknown bundle identifier');
     }
     if (!app.isActive) {
-      throw new Error('Washer is inactive or disabled');
+      throw new Error('Disabled application identifier');
+    }
+    if (expectedAppType && app.appType !== expectedAppType) {
+      throw new Error('Session application scope mismatch');
     }
 
     return {

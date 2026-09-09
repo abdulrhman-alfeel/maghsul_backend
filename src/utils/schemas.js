@@ -43,7 +43,7 @@ export const orderSchemas = {
       return result('pickup and delivery are required');
     }
     const forbiddenFields = [
-      'applicationId', 'appType', 'originApplicationId', 'originCustomerApplicationId',
+      'washerId', 'applicationId', 'appType', 'originApplicationId', 'originCustomerApplicationId',
       'customerApplicationId', 'identityId', 'customerId', 'customerMembershipId', 'sessionId'
     ];
     for (const field of forbiddenFields) {

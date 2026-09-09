@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import asyncHandler from '../../../helpers/asyncHandler.js';
 import validate from '../../../middlewares/validate.js';
-import appClientResolver from '../../../middlewares/appClientResolver.js';
+import washerContextResolver from '../../../middlewares/washerContextResolver.js';
 import {
   contextGuard,
   requireProvisionalSession,
+  requireCustomerEnrollmentSession,
   requireOperationalSession,
   requireStaffSession
 } from '../../../middlewares/contextGuard.js';
@@ -23,9 +24,10 @@ function validatePhone(data) {
 }
 
 function validateOtp(data) {
-  const phoneResult = validatePhone(data);
-  if (phoneResult.error) return phoneResult;
-  if (!data?.code || typeof data.code !== 'string' || !data.code.trim()) {
+  if (!data?.phone || typeof data.phone !== 'string' || !data.phone.trim()) {
+    return { error: 'phone is required', value: data };
+  }
+  if (!data?.code || (typeof data.code !== 'string' && typeof data.code !== 'number')) {
     return { error: 'code is required', value: data };
   }
   return { error: null, value: data };
@@ -46,7 +48,7 @@ function validateRefreshBody(data) {
 }
 
 function validateSessionId(data) {
-  if (!data?.id || typeof data.id !== 'string') {
+  if (!data?.sessionId || typeof data.sessionId !== 'string') {
     return { error: 'session id is required', value: data };
   }
   return { error: null, value: data };
@@ -60,23 +62,23 @@ const router = Router();
 
 router.post(
   '/customer/send-otp',
-  appClientResolver,
+  washerContextResolver,
   validate({ body: validatePhone }),
   asyncHandler(CustomerController.sendOtp)
 );
 
 router.post(
   '/customer/verify-otp',
-  appClientResolver,
+  washerContextResolver,
   validate({ body: validateOtp }),
   asyncHandler(CustomerController.verifyOtp)
 );
 
 router.post(
   '/customer/enroll',
-  appClientResolver,
+  washerContextResolver,
   asyncHandler(contextGuard),
-  requireProvisionalSession,
+  requireCustomerEnrollmentSession,
   asyncHandler(CustomerController.enroll)
 );
 

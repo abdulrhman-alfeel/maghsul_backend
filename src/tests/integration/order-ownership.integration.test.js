@@ -3,18 +3,13 @@ import { app } from '../../../src/app.js';
 import prisma from '../../../src/config/db.js';
 import { createTestIdentity, createCustomerMembership, setupTestDb, teardownTestDb } from './test-utils.js';
 import { SessionService } from '../../../src/modules/auth/services/session.service.js';
-import { ApplicationRegistry } from '../../../src/config/application.registry.js';
+import { closeNotificationQueue } from '../../../src/config/queue.js';
 
 describe('Order Ownership & CustomerMembership Evidence', () => {
   let customerIdentity, washer, branch, customerMembership, sessionData;
-  let otherWasher, otherBranch, otherMembership;
+  let otherWasher, otherBranch;
 
   beforeAll(async () => {
-    await prisma.driverTask.deleteMany({});
-    await prisma.orderItem.deleteMany({});
-    await prisma.orderEvent.deleteMany({});
-    await prisma.payment.deleteMany({});
-    await prisma.order.deleteMany({});
     await setupTestDb();
     
     // Washer
@@ -24,14 +19,18 @@ describe('Order Ownership & CustomerMembership Evidence', () => {
     branch = await prisma.branch.create({
       data: { washerId: washer.id, name: 'Main Branch', status: 'active', acceptingOrders: true }
     });
-
-    ApplicationRegistry['com.laundry.customer'] = { appType: 'customer', isActive: true, platform: 'ios/android', washerId: washer.id };
+    await prisma.coverageZone.create({
+      data: { branchId: branch.id, name: 'Main Zone', coverageType: 'circle', centerLat: 24.7136, centerLng: 46.6753, radiusMeters: 50000, isActive: true }
+    });
 
     otherWasher = await prisma.washer.create({
       data: { name: 'Other Washer', status: 'active', phone: '888' }
     });
     otherBranch = await prisma.branch.create({
       data: { washerId: otherWasher.id, name: 'Other Branch', status: 'active', acceptingOrders: true }
+    });
+    await prisma.coverageZone.create({
+      data: { branchId: otherBranch.id, name: 'Other Zone', coverageType: 'circle', centerLat: 24.7136, centerLng: 46.6753, radiusMeters: 50000, isActive: true }
     });
 
     customerIdentity = await createTestIdentity('+966500000021');
@@ -51,21 +50,17 @@ describe('Order Ownership & CustomerMembership Evidence', () => {
 
     sessionData = await SessionService.createOperationalSession(
       customerIdentity.id,
-      {
-        purpose: 'client',
-        customerMembershipId: customerMembership.id,
-        washerId: washer.id
-      },
+      { appType: 'customer' },
       userDevice.id
     );
   });
 
   afterAll(async () => {
+    await closeNotificationQueue();
     await teardownTestDb();
   });
 
   it('Duplicate membership prevented by actual unique constraint', async () => {
-    // Attempt to create another membership for the same identity and washer
     let error = null;
     try {
       await prisma.customerMembership.create({
@@ -88,13 +83,15 @@ describe('Order Ownership & CustomerMembership Evidence', () => {
     const res = await request(app)
       .post('/api/orders/create')
       .set('Authorization', `Bearer ${sessionData.accessToken}`)
+      .set('X-Washer-Id', otherWasher.id) // customer has NO membership for otherWasher
       .send({
-        washerId: otherWasher.id, // missing membership for this washer
-        branchId: branch.id, pickup: { lat: 24.7, lng: 46.7 },
+        branchId: otherBranch.id,
+        pickup: { lat: 24.7, lng: 46.7 },
         delivery: { lat: 24.7, lng: 46.7 }
       });
       
-    expect(res.status).not.toBe(200);
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('MEMBERSHIP_NOT_FOUND');
     const endCount = await prisma.order.count();
     expect(endCount).toBe(startCount); // rollback proven
   });
@@ -113,13 +110,15 @@ describe('Order Ownership & CustomerMembership Evidence', () => {
     const res = await request(app)
       .post('/api/orders/create')
       .set('Authorization', `Bearer ${sessionData.accessToken}`)
+      .set('X-Washer-Id', otherWasher.id)
       .send({
-        washerId: otherWasher.id,
-        branchId: branch.id, pickup: { lat: 24.7, lng: 46.7 },
+        branchId: otherBranch.id,
+        pickup: { lat: 24.7, lng: 46.7 },
         delivery: { lat: 24.7, lng: 46.7 }
       });
       
-    expect(res.status).not.toBe(200);
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('MEMBERSHIP_INACTIVE');
     const endCount = await prisma.order.count();
     expect(endCount).toBe(startCount); // rollback proven
   });
@@ -129,9 +128,11 @@ describe('Order Ownership & CustomerMembership Evidence', () => {
     const res = await request(app)
       .post('/api/orders/create')
       .set('Authorization', `Bearer ${sessionData.accessToken}`)
+      .set('X-Washer-Id', washer.id)
       .send({
         customerId: 'legacy-customer-id', // Spoofing attempt
-        branchId: branch.id, pickup: { lat: 24.7, lng: 46.7 },
+        branchId: branch.id,
+        pickup: { lat: 24.7, lng: 46.7 },
         delivery: { lat: 24.7, lng: 46.7 }
       });
       

@@ -117,6 +117,32 @@ export function requireProvisionalSession(req, res, next) {
 }
 
 /**
+ * Requires a valid Customer session for enrollment.
+ * Accepts both 'provisional' (new customer) and 'operational' (existing customer joining new washer).
+ * Rejects staff sessions, non-customer apps, and invalid session types.
+ */
+export function requireCustomerEnrollmentSession(req, res, next) {
+  try {
+    const ctx = req.authContext;
+    if (!ctx) {
+      throw new ApiError(401, 'UNAUTHORIZED', 'Authentication required');
+    }
+
+    if (ctx.staffMembershipId || (ctx.appType && ctx.appType !== 'customer')) {
+      throw new ApiError(403, 'CUSTOMER_SESSION_REQUIRED', 'Staff sessions cannot enroll as customer');
+    }
+
+    if (!['provisional', 'operational'].includes(ctx.sessionType)) {
+      throw new ApiError(403, 'INVALID_SESSION_TYPE', 'Enrollment requires a valid customer session');
+    }
+
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * Requires the session to be of type 'operational'.
  * Also validates Session Invariants:
  *   - Must have customerMembershipId OR staffMembershipId, not both.

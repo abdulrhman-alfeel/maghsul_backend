@@ -3,11 +3,13 @@ import { createWorkerRedisClient } from './redis.js';
 import logger from './logger.js';
 
 let _notificationQueue = null;
+let _queueRedisConnection = null;
 
 export const getNotificationQueue = () => {
   if (!_notificationQueue) {
+    _queueRedisConnection = createWorkerRedisClient();
     _notificationQueue = new Queue('notifications', {
-      connection: createWorkerRedisClient(),
+      connection: _queueRedisConnection,
       defaultJobOptions: {
         attempts: 3,
         backoff: {
@@ -18,8 +20,24 @@ export const getNotificationQueue = () => {
         removeOnFail: 1000,
       },
     });
-    logger.info('BullMQ: Notification queue initialized.');
   }
   return _notificationQueue;
+};
+
+export const closeNotificationQueue = async () => {
+  if (_notificationQueue) {
+    await _notificationQueue.close();
+    _notificationQueue = null;
+  }
+  if (_queueRedisConnection) {
+    try {
+      await _queueRedisConnection.quit();
+    } catch (e) {
+      try {
+        _queueRedisConnection.disconnect();
+      } catch (err) {}
+    }
+    _queueRedisConnection = null;
+  }
 };
 

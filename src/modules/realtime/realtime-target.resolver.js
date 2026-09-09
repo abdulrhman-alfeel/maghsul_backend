@@ -52,7 +52,7 @@ export class RealtimeTargetResolver {
 
     definition.validateAggregate(aggregate);
 
-    const { identityIds, appIdentities, washerIds, branchIds } = await definition.resolveRecipients(aggregate, prisma);
+    const { identityIds, appIdentities, washerIdentities, washerIds, branchIds } = await definition.resolveRecipients(aggregate, prisma);
     const rooms = [];
 
     // General identity rooms (e.g. for Staff who use the unified Dashboard)
@@ -60,11 +60,20 @@ export class RealtimeTargetResolver {
       identityIds.filter(Boolean).forEach(id => rooms.push(SocketRoomFactory.buildIdentityRoom(id)));
     }
 
-    // Strictly scoped app_identity rooms (e.g. for Customers to prevent cross-app leakage)
+    // Strictly scoped app_identity rooms (e.g. for Staff system scopes)
     if (appIdentities) {
       appIdentities.filter(Boolean).forEach(appIden => {
         if (appIden.applicationId && appIden.identityId) {
           rooms.push(SocketRoomFactory.buildAppIdentityRoom(appIden.applicationId, appIden.identityId));
+        }
+      });
+    }
+
+    // Canonical customer tenant rooms: app_identity:<washerId>:<identityId>
+    if (washerIdentities) {
+      washerIdentities.filter(Boolean).forEach(wIden => {
+        if (wIden.washerId && wIden.identityId) {
+          rooms.push(SocketRoomFactory.buildAppIdentityRoom(wIden.washerId, wIden.identityId));
         }
       });
     }

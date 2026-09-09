@@ -13,20 +13,38 @@ describe('RT-7: Connection Orchestration (Rooms & Overlap)', () => {
     };
   };
 
-  it('joins appropriate rooms for a customer session', () => {
+  it('joins appropriate rooms for a customer session with membership', () => {
     const socket = createSocketMock({
       appType: 'customer',
       sessionId: 'sess_1',
       identityId: 'cust_1',
-      applicationId: 'com.fajr.customer'
+      washerId: 'wash_1',
+      hasMembership: true
     });
 
     SocketRoomService.applyJoiningPolicy(socket);
 
     expect(socket.join).toHaveBeenCalledWith('session:sess_1');
-    expect(socket.join).toHaveBeenCalledWith('app_identity:com.fajr.customer:cust_1');
+    expect(socket.join).toHaveBeenCalledWith('app_identity:wash_1:cust_1');
     
-    // Customer must NOT join generic identity room
+    // Customer must NOT join generic identity room or washer room
+    expect(socket.join).not.toHaveBeenCalledWith('identity:cust_1');
+    expect(socket.join).not.toHaveBeenCalledWith('washer:wash_1');
+  });
+
+  it('joins only session room for a customer session without membership', () => {
+    const socket = createSocketMock({
+      appType: 'customer',
+      sessionId: 'sess_1',
+      identityId: 'cust_1',
+      washerId: 'wash_1',
+      hasMembership: false
+    });
+
+    SocketRoomService.applyJoiningPolicy(socket);
+
+    expect(socket.join).toHaveBeenCalledWith('session:sess_1');
+    expect(socket.join).not.toHaveBeenCalledWith('app_identity:wash_1:cust_1');
     expect(socket.join).not.toHaveBeenCalledWith('identity:cust_1');
   });
 

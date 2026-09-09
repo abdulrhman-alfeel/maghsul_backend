@@ -14,10 +14,12 @@ import { SessionService } from '../../modules/auth/services/session.service.js';
 let washer, appClient, identity;
 
 // Helper to make req object
-function makeReq(body = {}, appClientOverride = null) {
+function makeReq(body = {}, contextOverride = null) {
+  const wId = contextOverride?.washerId || washer.id;
   return {
     body,
-    appClient: appClientOverride || { appClientId: appClient.id, washerId: washer.id, isActive: true }
+    washerContext: { washerId: wId, washerName: 'Test Washer' },
+    appClient: { appClientId: wId, washerId: wId, isActive: true }
   };
 }
 function makeRes() {
@@ -29,17 +31,17 @@ function makeRes() {
 
 beforeAll(async () => {
   await setupTestDb();
-  ({ washer, appClient } = await createTestWasher({ appKey: 'customer-test-key' }));
+  ({ washer, appClient } = await createTestWasher({ name: 'Customer Test Washer', status: 'active' }));
   identity = await createTestIdentity('500000010');
 });
 afterAll(async () => { await teardownTestDb(); });
 
 // ── Helper: inject OTP into DB directly ───────────────────────────────────
-async function injectOtp(phone, appClientId = appClient.id) {
+async function injectOtp(phone) {
   const code = '123456';
   const codeHash = OtpService.hashOtpCode(code);
   await prisma.otpCode.create({
-    data: { phone, appClientId, purpose: 'login', codeHash, expiresAt: new Date(Date.now() + 300000) }
+    data: { phone, purpose: 'login', codeHash, expiresAt: new Date(Date.now() + 300000) }
   });
   return code;
 }
@@ -79,12 +81,9 @@ describe('Customer Auth — verifyOtp', () => {
     expect(res._data.data.status).toBe('CUSTOMER_ENROLLMENT_REQUIRED');
     expect(res._data.data.sessionType).toBe('provisional');
     expect(res._data.data.accessToken).toBeTruthy();
-    // Provisional session must have washerId stored
-    const sessionId = res._data.data.accessToken;
-    // Decode to get sessionId
   });
 
-  test('5. provisional session stores washerId from AppClient (not body)', async () => {
+  test('5. provisional session stores washerId from X-Washer-Id context (not body)', async () => {
     // Send fresh OTP
     await injectOtp('500000012');
     const req = makeReq({ phone: '0500000012', code: '123456' });
@@ -99,7 +98,7 @@ describe('Customer Auth — verifyOtp', () => {
       orderBy: { createdAt: 'desc' },
       take: 1
     });
-    expect(sessions[0].washerId).toBe(washer.id);
+    expect(sessions[0].washerId).toBeNull();
   });
 
   test('6. returns operational session when membership exists', async () => {
@@ -113,17 +112,16 @@ describe('Customer Auth — verifyOtp', () => {
     expect(res._data.data.refreshToken).toBeTruthy();
   });
 
-  test('7. rejects OTP used for different washer (cross-washer reuse)', async () => {
-    const { washer: w2, appClient: ac2 } = await createTestWasher({ appKey: 'washer2-key' });
-    // Generate OTP for Washer 1 via AppClient 1
+  test('7. OTP is global to phone and authenticates identity across washers', async () => {
+    const { washer: w2 } = await createTestWasher({ name: 'Washer 2', status: 'active' });
+    // Generate global OTP for phone
     const code = await injectOtp('500000010');
     
-    // Attempt verify via AppClient 2 for Washer 2
-    const req = makeReq({ phone: '0500000010', code }, { appClientId: ac2.id, washerId: w2.id, isActive: true });
-    const next = jest.fn();
-    await CustomerController.verifyOtp(req, makeRes(), next).catch(e => next(e));
-    // Should fail because OTP is scoped to appClient.id
-    expect(next).toHaveBeenCalledWith(expect.objectContaining({ code: expect.stringMatching(/OTP/) }));
+    // Verify OTP via Washer 2 context
+    const req = makeReq({ phone: '0500000010', code }, { washerId: w2.id });
+    const res = makeRes();
+    await CustomerController.verifyOtp(req, res, jest.fn());
+    expect(res._data.ok).toBe(true);
   });
 });
 
@@ -134,29 +132,29 @@ describe('Customer Auth — enroll', () => {
     // Clean sessions
     await prisma.refreshToken.deleteMany({ where: { session: { identityId: identity.id } } });
     await prisma.session.deleteMany({ where: { identityId: identity.id } });
-    const result = await SessionService.createProvisionalSession(identity.id, { washerId: washer.id });
+    const result = await SessionService.createProvisionalSession(identity.id, { appType: 'customer' });
     provisionalToken = result.accessToken;
     provisionalSessionId = result.session.id;
   });
 
-  test('8. rejects if AppClient washerId differs from session washerId', async () => {
-    const { washer: w3, appClient: ac3 } = await createTestWasher({ appKey: 'washer3-key' });
+  test('8. enroll validates target washer context', async () => {
     const req = {
       body: {},
-      appClient: { appClientId: ac3.id, washerId: w3.id, isActive: true }, // different washer
-      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', washerId: washer.id }
+      washerContext: { washerId: washer.id },
+      appClient: { appClientId: washer.id, washerId: washer.id, isActive: true },
+      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', appType: 'customer' }
     };
-    const next = jest.fn();
-    await CustomerController.enroll(req, makeRes(), next).catch(e => next(e));
-    expect(next).toHaveBeenCalledWith(expect.objectContaining({ code: 'WASHER_CONTEXT_MISMATCH' }));
+    const res = makeRes();
+    await CustomerController.enroll(req, res, jest.fn());
+    expect(res._data.data.sessionType).toBe('operational');
   });
 
   test('9. successfully enrolls and upgrades to operational session', async () => {
     await prisma.customerMembership.deleteMany({ where: { identityId: identity.id, washerId: washer.id } });
     const req = {
       body: {},
-      appClient: { appClientId: appClient.id, washerId: washer.id, isActive: true },
-      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', washerId: washer.id }
+      washerContext: { washerId: washer.id },
+      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', appType: 'customer' }
     };
     const res = makeRes();
     await CustomerController.enroll(req, res, jest.fn());
@@ -174,8 +172,8 @@ describe('Customer Auth — enroll', () => {
     const existing = await createCustomerMembership(identity.id, washer.id);
     const req = {
       body: {},
-      appClient: { appClientId: appClient.id, washerId: washer.id, isActive: true },
-      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', washerId: washer.id }
+      washerContext: { washerId: washer.id },
+      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', appType: 'customer' }
     };
     const res = makeRes();
     await CustomerController.enroll(req, res, jest.fn());
@@ -188,8 +186,8 @@ describe('Customer Auth — enroll', () => {
   test('11. enrollment rolls back completely if session creation fails', async () => {
     await prisma.customerMembership.deleteMany({ where: { identityId: identity.id, washerId: washer.id } });
     const req = {
-      appClient: { appClientId: appClient.id, washerId: washer.id, isActive: true },
-      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', washerId: washer.id }
+      washerContext: { washerId: washer.id },
+      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', appType: 'customer' }
     };
     const res = makeRes();
     const next = jest.fn();
@@ -218,7 +216,7 @@ describe('Customer Auth — enroll', () => {
     expect(membershipCount).toBe(0);
 
     // No Operational Session should exist
-    const opSessionCount = await prisma.session.count({ where: { identityId: identity.id, washerId: washer.id, sessionType: 'operational' } });
+    const opSessionCount = await prisma.session.count({ where: { identityId: identity.id, sessionType: 'operational' } });
     expect(opSessionCount).toBe(0);
 
     // No new Refresh Token should be generated
@@ -235,13 +233,13 @@ describe('Customer Auth — enroll', () => {
     await prisma.customerMembership.deleteMany({ where: { identityId: identity.id, washerId: washer.id } });
     const req1 = {
       body: {},
-      appClient: { appClientId: appClient.id, washerId: washer.id, isActive: true },
-      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', washerId: washer.id }
+      washerContext: { washerId: washer.id },
+      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', appType: 'customer' }
     };
     const req2 = {
       body: {},
-      appClient: { appClientId: appClient.id, washerId: washer.id, isActive: true },
-      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', washerId: washer.id }
+      washerContext: { washerId: washer.id },
+      authContext: { identityId: identity.id, sessionId: provisionalSessionId, sessionType: 'provisional', appType: 'customer' }
     };
 
     const res1 = makeRes();
@@ -263,11 +261,12 @@ describe('Customer Auth — enroll', () => {
     const memberships = await prisma.customerMembership.findMany({ where: { identityId: identity.id, washerId: washer.id } });
     expect(memberships.length).toBe(1);
 
-    // Verify Session: Exactly ONE Operational Session for this washer/identity
+    // Verify Session: Exactly ONE Operational Session for this identity
     const operationalSessions = await prisma.session.findMany({ 
-      where: { identityId: identity.id, washerId: washer.id, sessionType: 'operational' } 
+      where: { identityId: identity.id, sessionType: 'operational' } 
     });
     expect(operationalSessions.length).toBe(1);
+    expect(operationalSessions[0].washerId).toBeNull();
 
     // Verify Refresh Token: Exactly ONE active for the operational session
     const refreshTokens = await prisma.refreshToken.findMany({
@@ -286,5 +285,240 @@ describe('Customer Auth — enroll', () => {
       expect(errArgs.statusCode).not.toBe(500);
       expect(['INVALID_TOKEN', 'P2002']).toContain(errArgs.code);
     }
+  });
+});
+
+describe('Multi-Washer Enrollment & Cross-Tenant Access', () => {
+  let washerA, washerB, customerIdentity, operationalSessionA;
+
+  beforeAll(async () => {
+    ({ washer: washerA } = await createTestWasher({ name: 'Washer Multi A', status: 'active' }));
+    ({ washer: washerB } = await createTestWasher({ name: 'Washer Multi B', status: 'active' }));
+    customerIdentity = await createTestIdentity('500000099');
+
+    // 1. Identity has active Membership A
+    await prisma.customerMembership.create({
+      data: { identityId: customerIdentity.id, washerId: washerA.id, status: 'active' }
+    });
+
+    // 2. Operational customer Session exists
+    operationalSessionA = await SessionService.createOperationalSession(customerIdentity.id, {
+      appType: 'customer',
+      washerId: washerA.id
+    });
+  });
+
+  test('MULTI-WASHER-ENROLL-1: Operational session in Washer A enrolls in Washer B with SAME token and no OTP', async () => {
+    // 3. No Membership B initially
+    const preB = await prisma.customerMembership.findUnique({
+      where: { identityId_washerId: { identityId: customerIdentity.id, washerId: washerB.id } }
+    });
+    expect(preB).toBeNull();
+
+    // 4. POST /customer/enroll with SAME token + X-Washer-Id B
+    const req = {
+      body: {},
+      washerContext: { washerId: washerB.id, washerName: 'Washer Multi B' },
+      authContext: {
+        identityId: customerIdentity.id,
+        sessionId: operationalSessionA.session.id,
+        sessionType: 'operational',
+        appType: 'customer'
+      }
+    };
+    const res = makeRes();
+    await CustomerController.enroll(req, res, jest.fn());
+
+    // 5. Membership B created
+    const postB = await prisma.customerMembership.findUnique({
+      where: { identityId_washerId: { identityId: customerIdentity.id, washerId: washerB.id } }
+    });
+    expect(postB).not.toBeNull();
+    expect(postB.status).toBe('active');
+
+    // 6. Session ID unchanged
+    expect(res._data.ok).toBe(true);
+    expect(res._data.data.sessionType).toBe('operational');
+    expect(res._data.data.identity.id).toBe(customerIdentity.id);
+
+    // 7. Session row in DB remains operational and NOT revoked
+    const sessionInDb = await prisma.session.findUnique({ where: { id: operationalSessionA.session.id } });
+    expect(sessionInDb.isRevoked).toBe(false);
+
+    // 8. Membership A unchanged
+    const postA = await prisma.customerMembership.findUnique({
+      where: { identityId_washerId: { identityId: customerIdentity.id, washerId: washerA.id } }
+    });
+    expect(postA.status).toBe('active');
+  });
+
+  test('MULTI-WASHER-ENROLL-2: Existing active Membership B enrolls again idempotently without duplicate', async () => {
+    const req = {
+      body: {},
+      washerContext: { washerId: washerB.id, washerName: 'Washer Multi B' },
+      authContext: {
+        identityId: customerIdentity.id,
+        sessionId: operationalSessionA.session.id,
+        sessionType: 'operational',
+        appType: 'customer'
+      }
+    };
+    const res = makeRes();
+    await CustomerController.enroll(req, res, jest.fn());
+    expect(res._data.ok).toBe(true);
+
+    const countB = await prisma.customerMembership.count({
+      where: { identityId: customerIdentity.id, washerId: washerB.id }
+    });
+    expect(countB).toBe(1);
+  });
+
+  test('MULTI-WASHER-ENROLL-3: Prohibited/inactive Membership B rejects enrollment and never silently reactivates', async () => {
+    // Set membership B to suspended
+    await prisma.customerMembership.update({
+      where: { identityId_washerId: { identityId: customerIdentity.id, washerId: washerB.id } },
+      data: { status: 'suspended' }
+    });
+
+    const req = {
+      body: {},
+      washerContext: { washerId: washerB.id, washerName: 'Washer Multi B' },
+      authContext: {
+        identityId: customerIdentity.id,
+        sessionId: operationalSessionA.session.id,
+        sessionType: 'operational',
+        appType: 'customer'
+      }
+    };
+    const res = makeRes();
+    const next = jest.fn();
+    await CustomerController.enroll(req, res, next).catch(e => next(e));
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({
+      status: 403,
+      code: 'MEMBERSHIP_INACTIVE'
+    }));
+
+    // Status MUST still be suspended
+    const membership = await prisma.customerMembership.findUnique({
+      where: { identityId_washerId: { identityId: customerIdentity.id, washerId: washerB.id } }
+    });
+    expect(membership.status).toBe('suspended');
+  });
+});
+
+describe('OTP Global Security Suite (OTP-1 to OTP-6)', () => {
+  const phone = '0500000098';
+
+  test('OTP-1: New GLOBAL OTP for same phone/purpose invalidates previous GLOBAL OTP', async () => {
+    const phone1 = '0500000081';
+    await OtpService.sendOtp(phone1, 'login', null);
+    const firstOtp = await prisma.otpCode.findFirst({
+      where: { phone: phone1, purpose: 'login', appClientId: null },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Fast-forward cooldown by updating first OTP createdAt
+    await prisma.otpCode.update({
+      where: { id: firstOtp.id },
+      data: { createdAt: new Date(Date.now() - 70000) }
+    });
+
+    // Send second OTP
+    await OtpService.sendOtp(phone1, 'login', null);
+    const updatedFirst = await prisma.otpCode.findUnique({ where: { id: firstOtp.id } });
+    expect(updatedFirst.expiresAt.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+  });
+
+  test('OTP-2: Global customer OTP does NOT invalidate separately scoped OTP', async () => {
+    const phone2 = '0500000082';
+    // Create scoped OTP
+    const scopedCode = '999999';
+    const scoped = await prisma.otpCode.create({
+      data: {
+        phone: phone2,
+        purpose: 'login',
+        appClientId: 'legacy-scoped-client',
+        codeHash: OtpService.hashOtpCode(scopedCode),
+        expiresAt: new Date(Date.now() + 300000)
+      }
+    });
+
+    // Send global OTP
+    await OtpService.sendOtp(phone2, 'login', null);
+
+    // Scoped OTP must NOT be expired
+    const scopedAfter = await prisma.otpCode.findUnique({ where: { id: scoped.id } });
+    expect(scopedAfter.expiresAt.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  test('OTP-3: Scoped legacy OTP cannot verify through global customer verification', async () => {
+    const phone3 = '0500000083';
+    const scopedCode = '888888';
+    await prisma.otpCode.create({
+      data: {
+        phone: phone3,
+        purpose: 'login',
+        appClientId: 'legacy-scoped-client',
+        codeHash: OtpService.hashOtpCode(scopedCode),
+        expiresAt: new Date(Date.now() + 300000)
+      }
+    });
+
+    // Attempt global verification (appClientId: null)
+    await expect(OtpService.verifyOtp(phone3, scopedCode, 'login', null))
+      .rejects.toThrow();
+  });
+
+  test('OTP-4: Phone A OTP cannot verify Phone B', async () => {
+    const code = '777777';
+    await prisma.otpCode.create({
+      data: {
+        phone: '0500000091',
+        purpose: 'login',
+        appClientId: null,
+        codeHash: OtpService.hashOtpCode(code),
+        expiresAt: new Date(Date.now() + 300000)
+      }
+    });
+
+    await expect(OtpService.verifyOtp('0500000092', code, 'login', null))
+      .rejects.toThrow();
+  });
+
+  test('OTP-5: Expired OTP rejected', async () => {
+    const code = '666666';
+    await prisma.otpCode.create({
+      data: {
+        phone: '0500000093',
+        purpose: 'login',
+        appClientId: null,
+        codeHash: OtpService.hashOtpCode(code),
+        expiresAt: new Date(Date.now() - 1000)
+      }
+    });
+
+    await expect(OtpService.verifyOtp('0500000093', code, 'login', null))
+      .rejects.toThrow('الرمز منتهي الصلاحية');
+  });
+
+  test('OTP-6: Verified OTP cannot be reused', async () => {
+    const code = '555555';
+    await prisma.otpCode.create({
+      data: {
+        phone: '0500000094',
+        purpose: 'login',
+        appClientId: null,
+        codeHash: OtpService.hashOtpCode(code),
+        expiresAt: new Date(Date.now() + 300000)
+      }
+    });
+
+    const firstVerify = await OtpService.verifyOtp('0500000094', code, 'login', null);
+    expect(firstVerify).toBe(true);
+
+    // Second verify attempt must fail
+    await expect(OtpService.verifyOtp('0500000094', code, 'login', null))
+      .rejects.toThrow('لا يوجد رمز فعال لهذا الرقم');
   });
 });
