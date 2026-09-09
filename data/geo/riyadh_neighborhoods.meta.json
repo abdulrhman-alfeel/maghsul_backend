@@ -7,9 +7,9 @@
   "coordinateSystem": "EPSG:4326",
   "coordinateOrder": "[longitude, latitude]",
   "sourceFeatureCount": 166,
-  "selectableFeatureCount": 165,
+  "selectableFeatureCount": 173,
   "excludedFeatureCount": 1,
-  "featureCount": 165,
+  "featureCount": 173,
   "polygonCount": 165,
   "multiPolygonCount": 0,
   "bbox": [
@@ -34,7 +34,7 @@
       "selectable": false
     }
   ],
-  "sha256": "cefc6cd5b46646759ef41e562c14b725b0f4d4b539a04e505bd16742fd9d6e85",
+  "sha256": "9188f4e0cea39a3ea6d962dbb1944700473b07ead74f55b5173ffc12d3dc5d71",
   "fileSizeBytes": 4204479,
   "totalCoordinatePoints": 43398,
   "validation": {

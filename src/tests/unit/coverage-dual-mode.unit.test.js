@@ -67,11 +67,19 @@ describe('Dual-Mode Geographic Coverage Unit Tests (Pure Logic)', () => {
 
   // ── 3. GeoService Tests ───────────────────────────────────────────────────
   describe('GeoService', () => {
-    test('loads display catalog with 165 features and valid ETag for riyadh', () => {
+    test('loads display catalog with 173 features and valid ETag for riyadh', () => {
       const { catalog, etag } = GeoService.getDisplayCatalog('riyadh');
-      expect(catalog.features).toHaveLength(165);
+      expect(catalog.features).toHaveLength(173);
       expect(etag).toMatch(/^"[a-f0-9]{16}"$/);
       expect(catalog.cityCode).toBe('riyadh');
+
+      // Verify outer regions exist in catalog
+      const uyaynah = catalog.features.find((f) => f.properties.districtCode === '9903');
+      expect(uyaynah).toBeDefined();
+      expect(uyaynah.properties.nameAr).toBe('العيينة');
+      const jubaylah = catalog.features.find((f) => f.properties.districtCode === '9902');
+      expect(jubaylah).toBeDefined();
+      expect(jubaylah.properties.nameAr).toBe('الجبيلة');
 
       const sample = catalog.features[0];
       expect(sample.properties.districtCode).toBeDefined();
